@@ -1,0 +1,46 @@
+﻿using System.Windows;
+using GeminiLiveShare.App.ViewModels;
+using GeminiLiveShare.App.Views;
+using GeminiLiveShare.Core.Audio;
+using GeminiLiveShare.Core.Gemini;
+using GeminiLiveShare.Core.Security;
+using GeminiLiveShare.Core.Vision;
+
+namespace GeminiLiveShare.App;
+
+/// <summary>
+/// Interaction logic for App.xaml
+/// </summary>
+public partial class App : Application
+{
+    private SessionOrchestrator? _sessionOrchestrator;
+
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+
+        ApiKeyVaultService apiKeyVault = new();
+        _sessionOrchestrator = new SessionOrchestrator(
+            new AudioCaptureService(),
+            new AudioPlaybackService(),
+            new GeminiLiveClient(),
+            new ScreenCaptureService(),
+            new ImageProcessingService(new CredentialBlurService()));
+
+        MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault);
+        MainWindow window = new(viewModel, apiKeyVault);
+        MainWindow = window;
+        window.Show();
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        if (_sessionOrchestrator is not null)
+        {
+            _sessionOrchestrator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+
+        base.OnExit(e);
+    }
+}
+

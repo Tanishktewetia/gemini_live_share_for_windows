@@ -1,0 +1,2 @@
+MonitorFromPoint
+GetMonitorInfo
