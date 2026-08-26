@@ -221,6 +221,10 @@ run and verify — don't let Claude Code jump ahead to later phases.
   real API key open on screen during a session, and it never appears in
   what gets sent. This is your "working prototype ready" milestone.
 
+#### Known limitations
+
+**PHASE 3A ADDITIONAL LIMITATION:** Credential blur reliability decreases when multiple windows are arranged/tiled on screen simultaneously (e.g. 4 windows snapped to quadrants). In this configuration, blur may intermittently fail to apply to a visible password field even though it works reliably when that window is used in isolation (maximized or alone in focus). Blur also lags noticeably during active window dragging. Root cause not yet diagnosed — likely related to foreground window detection or UI Automation tree state during rapid window arrangement changes. Deferred for future investigation. Recommendation for current use: avoid displaying sensitive fields while actively rearranging windows; prefer single-window-focus workflows when screen-sharing with credentials visible.
+
 ### Phase 4 — Persistence & reliability
 - `ChatHistoryRepository` (SQLite): log Gemini's `inputTranscription` /
   `outputTranscription` (you get free transcripts from the Live API
@@ -240,6 +244,11 @@ run and verify — don't let Claude Code jump ahead to later phases.
   animation ("dynamic island" feel) via WPF `Storyboard` animations.
 - Mic mute / screen-share toggle buttons bound to `SessionOrchestrator`.
 - General visual polish, icons, theming.
+
+### Phase 6 — Future Hardening
+1. OCR-based plain-text credential detection (reverted after a regression, needs isolated standalone testing before re-integration).
+2. Multi-window blur reliability (see the Phase 3a limitation above).
+3. Acoustic echo cancellation for speaker use (headphones work fine, speakers have echo).
 
 ---
 
