@@ -237,13 +237,74 @@ run and verify — don't let Claude Code jump ahead to later phases.
   resumes gracefully instead of crashing, and past conversations are
   visible in a simple log/list.
 
-### Phase 5 — UI polish (last, as planned)
-- `OverlayWindow`: transparent, borderless, always-on-top WPF window.
-- `TrayIconManager`: minimize to tray instead of closing.
-- `GlobalHotkey`: e.g. `Alt+S` toggles the overlay, expand/collapse
-  animation ("dynamic island" feel) via WPF `Storyboard` animations.
-- Mic mute / screen-share toggle buttons bound to `SessionOrchestrator`.
-- General visual polish, icons, theming.
+## Phase 5 — UI Polish (detailed spec)
+
+Phases 0-4 are complete (voice, screen capture, dual-layer credential
+blur with toggle, SQLite chat history, reconnect/session resumption).
+Phase 5 builds the final UI layer in sub-phases, each independently
+testable.
+
+### Overlay Design ("Dynamic Island" style)
+
+**Collapsed state:** small circle only.
+**Expanded state:** horizontal pill containing, left to right:
+1. Screen-share toggle button
+2. Center circle — animated audio-reactive visual (dots that grow/shrink
+   with Gemini's speech, continuous colorful/bluish gradient animation)
+3. Mic mute/unmute button
+4. Close (X) button
+
+**Behavior:**
+- Translucent, light-colored by default (readable over any background,
+  light or dark desktop). User can switch to a dark variant in Settings.
+- Darkens/becomes more opaque on mouse hover (interactive feedback).
+- Draggable — user can reposition it (e.g. top or bottom of screen);
+  position persists via Settings.
+- Clicking the center circle collapses the pill to just the small
+  circle (session stays alive in background, this is NOT closing).
+  Clicking the collapsed circle again re-expands and resumes.
+- Clicking X shows a confirmation dialog ("Are you sure you want to
+  close this session?") before actually ending the session — collapse
+  via the circle does NOT need this confirmation, only X does.
+- A user-configurable global hotkey (set in Settings, e.g. Ctrl+Y)
+  shows/hides (expands/collapses) the overlay from anywhere.
+
+### Chat History Sidebar
+
+- Visual style inspired by Claude Desktop: dark theme, left sidebar
+  listing past sessions, click a session to view its full transcript.
+- Each new conversation is a new session (already true in the SQLite
+  schema from Phase 4).
+- User can delete individual chat sessions from this UI.
+
+### Settings Panel
+
+- API key: add new / delete existing.
+- Sensitive-content filtering: clearly show current ON/OFF status
+  (existing toggle from Phase 3b), accessible here.
+- Light/dark theme toggle for the overlay.
+- Overlay position preference.
+- Global hotkey configuration (rebind the shortcut).
+
+### Background Running
+
+- Closing the main window does not exit the app — it continues running
+  in the system tray.
+- Tray icon provides reopen/exit options.
+
+### Sub-phase build order
+
+- 5a — Overlay foundation: shape, translucency, hover-darken, drag,
+  collapse/expand mechanics, close confirmation dialog. No functional
+  buttons yet.
+- 5b — Overlay functional buttons: wire screen-share toggle and mic
+  mute/unmute to existing SessionOrchestrator.
+- 5c — Center circle animation: audio-reactive dots + gradient.
+- 5d — Global hotkey: user-configurable show/hide.
+- 5e — Chat history sidebar: session list, view, delete.
+- 5f — Settings panel: API key management, filter status, theme
+  toggle, position preference, hotkey config.
+- 5g — Tray icon, background running, final polish pass.
 
 ### Phase 6 — Future Hardening
 1. Multi-window blur reliability (see the Phase 3a limitation above).
