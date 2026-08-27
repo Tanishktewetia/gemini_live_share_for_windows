@@ -12,32 +12,85 @@
         WindowStartupLocation="CenterScreen"
         WindowStyle="None">
     <Window.Resources>
+        <LinearGradientBrush x:Key="GlassBackgroundBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Offset="0" Color="#E62D2D32" />
+            <GradientStop Offset="0.55" Color="#E6222227" />
+            <GradientStop Offset="1" Color="#E61A1A1E" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="GlassHoverBackgroundBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Offset="0" Color="#F22A2A2F" />
+            <GradientStop Offset="0.55" Color="#F21D1D21" />
+            <GradientStop Offset="1" Color="#F2151518" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="GeminiGradientBrush" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Offset="0" Color="#FF54C7F3" />
+            <GradientStop Offset="0.38" Color="#FF5B8DEF" />
+            <GradientStop Offset="0.72" Color="#FF8067DC" />
+            <GradientStop Offset="1" Color="#FFB45BDD" />
+        </LinearGradientBrush>
+
         <Style x:Key="OverlayShellStyle" TargetType="Border">
-            <Setter Property="Background" Value="#D9F4F7FC" />
-            <Setter Property="BorderBrush" Value="#99FFFFFF" />
+            <Setter Property="Background" Value="{StaticResource GlassBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="#24FFFFFF" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Effect">
                 <Setter.Value>
-                    <DropShadowEffect BlurRadius="18"
+                    <DropShadowEffect BlurRadius="22"
                                       Direction="270"
-                                      Opacity="0.28"
-                                      ShadowDepth="3"
-                                      Color="#FF26364A" />
+                                      Opacity="0.48"
+                                      ShadowDepth="4"
+                                      Color="#FF05070C" />
                 </Setter.Value>
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#F2DCE4EF" />
-                    <Setter Property="BorderBrush" Value="#CCFFFFFF" />
+                    <Setter Property="Background" Value="{StaticResource GlassHoverBackgroundBrush}" />
+                    <Setter Property="BorderBrush" Value="#3DFFFFFF" />
                 </Trigger>
             </Style.Triggers>
         </Style>
 
         <Style x:Key="PlaceholderStyle" TargetType="Border">
-            <Setter Property="Background" Value="#26778DA8" />
-            <Setter Property="BorderBrush" Value="#66778DA8" />
+            <Setter Property="Background" Value="#52101013" />
+            <Setter Property="BorderBrush" Value="#1FFFFFFF" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="16" />
+            <Setter Property="CornerRadius" Value="18" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#8050525A" />
+                    <Setter Property="BorderBrush" Value="#47FFFFFF" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="OverlayButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#52101013" />
+            <Setter Property="BorderBrush" Value="#1FFFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="#FFE7E9EE" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="18">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#8050525A" />
+                    <Setter Property="BorderBrush" Value="#47FFFFFF" />
+                    <Setter Property="Foreground" Value="White" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="#A060626B" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
     </Window.Resources>
 
@@ -51,13 +104,15 @@
                 Cursor="Hand"
                 MouseLeftButtonDown="OnCollapsedMouseLeftButtonDown"
                 Style="{StaticResource OverlayShellStyle}">
-            <Ellipse Width="28" Height="28">
-                <Ellipse.Fill>
-                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                        <GradientStop Offset="0" Color="#FF63B3ED" />
-                        <GradientStop Offset="1" Color="#FF7C83FD" />
-                    </LinearGradientBrush>
-                </Ellipse.Fill>
+            <Ellipse Width="32"
+                     Height="32"
+                     Fill="{StaticResource GeminiGradientBrush}">
+                <Ellipse.Effect>
+                    <DropShadowEffect BlurRadius="12"
+                                      Opacity="0.55"
+                                      ShadowDepth="0"
+                                      Color="#FF6B8FF0" />
+                </Ellipse.Effect>
             </Ellipse>
         </Border>
 
@@ -80,9 +135,16 @@
 
                 <Border Grid.Column="0"
                         Width="36"
-                        Height="32"
+                        Height="36"
                         ToolTip="Screen-share control coming in Phase 5b"
-                        Style="{StaticResource PlaceholderStyle}" />
+                        Style="{StaticResource PlaceholderStyle}">
+                    <TextBlock HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               FontFamily="Segoe MDL2 Assets"
+                               FontSize="16"
+                               Foreground="#FFE1E4EA"
+                               Text="&#xE7F4;" />
+                </Border>
 
                 <Border x:Name="ExpandedCenter"
                         Grid.Column="2"
@@ -93,11 +155,14 @@
                         MouseLeftButtonDown="OnExpandedCenterMouseLeftButtonDown"
                         ToolTip="Collapse overlay">
                     <Border.Background>
-                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                            <GradientStop Offset="0" Color="#CC63B3ED" />
-                            <GradientStop Offset="1" Color="#CC7C83FD" />
-                        </LinearGradientBrush>
+                        <StaticResource ResourceKey="GeminiGradientBrush" />
                     </Border.Background>
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="14"
+                                          Opacity="0.45"
+                                          ShadowDepth="0"
+                                          Color="#FF716FE8" />
+                    </Border.Effect>
                     <TextBlock HorizontalAlignment="Center"
                                VerticalAlignment="Center"
                                FontSize="18"
@@ -107,9 +172,16 @@
 
                 <Border Grid.Column="4"
                         Width="36"
-                        Height="32"
+                        Height="36"
                         ToolTip="Microphone control coming in Phase 5b"
-                        Style="{StaticResource PlaceholderStyle}" />
+                        Style="{StaticResource PlaceholderStyle}">
+                    <TextBlock HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               FontFamily="Segoe MDL2 Assets"
+                               FontSize="16"
+                               Foreground="#FFE1E4EA"
+                               Text="&#xE720;" />
+                </Border>
 
                 <Button x:Name="CloseButton"
                         Grid.Column="6"
@@ -118,13 +190,12 @@
                         Padding="0"
                         HorizontalAlignment="Center"
                         VerticalAlignment="Center"
-                        Background="Transparent"
-                        BorderBrush="Transparent"
                         Click="OnCloseClick"
                         Content="×"
                         Cursor="Hand"
-                        FontSize="22"
-                        Foreground="#FF334155"
+                        FontFamily="Segoe UI"
+                        FontSize="20"
+                        Style="{StaticResource OverlayButtonStyle}"
                         ToolTip="Close session" />
             </Grid>
         </Border>
