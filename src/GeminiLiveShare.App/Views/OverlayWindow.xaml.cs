@@ -190,6 +190,12 @@ public partial class OverlayWindow : Window
         Width = _isExpanded ? ExpandedWidth : CollapsedSize;
     }
 
+    public void ToggleExpandedState()
+    {
+        _isExpanded = !_isExpanded;
+        UpdateVisualState();
+    }
+
     private void OnCloseClick(object sender, RoutedEventArgs e)
     {
         CloseSessionDialog dialog = new()

@@ -2,6 +2,7 @@ using System.Text.Json;
 using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Gemini.Models;
+using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
 using GeminiLiveShare.Core.Storage;
 using GeminiLiveShare.Core.Vision;
@@ -19,6 +20,7 @@ ValidateReconnectPolicy();
 await ValidateChatHistoryAsync();
 await ValidateMediaPauseAndRestoreAsync();
 await ValidateSpeakingStateAsync();
+ValidateGlobalHotkeySettings();
 Console.WriteLine("Credential filtering, Live protocol, reconnect, and chat-history validation passed.");
 
 static void ValidateMatcher()
@@ -48,6 +50,30 @@ static void ValidateMatcher()
     Require(sameRowMatches.Count == 2, "same-row split password label/value was not detected");
     Require(sameRowMatches.Any(match => match.Text == "MyFakePassword123!"),
         "same-row password value was not covered");
+}
+
+static void ValidateGlobalHotkeySettings()
+{
+    string directory = Path.Combine(Path.GetTempPath(), $"gemini-hotkey-{Guid.NewGuid():N}");
+    string settingsPath = Path.Combine(directory, "hotkey-settings.json");
+    try
+    {
+        GlobalHotkeySettings settings = new(settingsPath);
+        GlobalHotkeyConfiguration defaults = settings.Load();
+        Require(defaults == GlobalHotkeyConfiguration.Default, "Ctrl+Y was not used as the default hotkey");
+        Require(File.Exists(settingsPath), "default hotkey settings were not persisted");
+
+        GlobalHotkeyConfiguration configured = new(HotkeyModifiers.Control | HotkeyModifiers.Shift, 0x48);
+        settings.Save(configured);
+        Require(settings.Load() == configured, "configured hotkey did not round-trip through JSON settings");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, true);
+        }
+    }
 }
 
 static async Task ValidateSanitizationBeforeEncodingAsync()
