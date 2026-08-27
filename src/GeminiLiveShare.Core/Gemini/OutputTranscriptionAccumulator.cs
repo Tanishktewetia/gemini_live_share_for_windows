@@ -8,15 +8,16 @@ internal sealed class OutputTranscriptionAccumulator
 
     public string? Process(string? chunk, bool turnComplete, bool interrupted)
     {
-        if (interrupted)
-        {
-            _text.Clear();
-            return null;
-        }
-
         if (!string.IsNullOrEmpty(chunk))
         {
             _text.Append(chunk);
+        }
+
+        if (interrupted)
+        {
+            string? interruptedText = _text.Length == 0 ? null : _text.ToString();
+            _text.Clear();
+            return interruptedText;
         }
 
         if (!turnComplete || _text.Length == 0)

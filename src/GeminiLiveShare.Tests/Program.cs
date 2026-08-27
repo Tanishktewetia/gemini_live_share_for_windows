@@ -162,6 +162,13 @@ static void ValidateOutputTranscriptionAccumulation()
         "assistant transcription was emitted before turn completion");
     Require(accumulator.Process(null, true, false) == "Hallo! Wie kann ich dir heute helfen?",
         "assistant transcription chunks were not emitted as one complete turn");
+
+    Require(accumulator.Process("This response was", false, false) is null,
+        "partial assistant transcription was emitted before interruption");
+    Require(accumulator.Process(" interrupted", false, true) == "This response was interrupted",
+        "partial assistant transcription was not emitted on interruption");
+    Require(accumulator.Process(null, false, true) is null,
+        "an empty assistant transcription was emitted on interruption");
 }
 
 static void ValidateReconnectPolicy()
