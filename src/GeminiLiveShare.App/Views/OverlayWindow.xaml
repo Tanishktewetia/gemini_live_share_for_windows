@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Gemini Live Share Overlay"
         Width="296"
-        Height="72"
+        Height="96"
         AllowsTransparency="True"
         Background="Transparent"
         ResizeMode="NoResize"
@@ -12,69 +12,22 @@
         WindowStartupLocation="CenterScreen"
         WindowStyle="None">
     <Window.Resources>
-        <LinearGradientBrush x:Key="GlassBackgroundBrush" StartPoint="0,0" EndPoint="0,1">
-            <GradientStop Offset="0" Color="#E62D2D32" />
-            <GradientStop Offset="0.55" Color="#E6222227" />
-            <GradientStop Offset="1" Color="#E61A1A1E" />
-        </LinearGradientBrush>
-        <LinearGradientBrush x:Key="GlassHoverBackgroundBrush" StartPoint="0,0" EndPoint="0,1">
-            <GradientStop Offset="0" Color="#F22A2A2F" />
-            <GradientStop Offset="0.55" Color="#F21D1D21" />
-            <GradientStop Offset="1" Color="#F2151518" />
-        </LinearGradientBrush>
-        <LinearGradientBrush x:Key="GeminiGradientBrush" StartPoint="0,0" EndPoint="1,1">
-            <GradientStop Offset="0" Color="#FF54C7F3" />
-            <GradientStop Offset="0.38" Color="#FF5B8DEF" />
-            <GradientStop Offset="0.72" Color="#FF8067DC" />
-            <GradientStop Offset="1" Color="#FFB45BDD" />
-        </LinearGradientBrush>
-
-        <Style x:Key="OverlayShellStyle" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource GlassBackgroundBrush}" />
-            <Setter Property="BorderBrush" Value="#24FFFFFF" />
+        <Style x:Key="SideToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Width" Value="40" />
+            <Setter Property="Height" Value="40" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="#38101012" />
+            <Setter Property="BorderBrush" Value="#38FFFFFF" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Effect">
-                <Setter.Value>
-                    <DropShadowEffect BlurRadius="22"
-                                      Direction="270"
-                                      Opacity="0.48"
-                                      ShadowDepth="4"
-                                      Color="#FF05070C" />
-                </Setter.Value>
-            </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="{StaticResource GlassHoverBackgroundBrush}" />
-                    <Setter Property="BorderBrush" Value="#3DFFFFFF" />
-                </Trigger>
-            </Style.Triggers>
-        </Style>
-
-        <Style x:Key="PlaceholderStyle" TargetType="Border">
-            <Setter Property="Background" Value="#52101013" />
-            <Setter Property="BorderBrush" Value="#1FFFFFFF" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="18" />
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#8050525A" />
-                    <Setter Property="BorderBrush" Value="#47FFFFFF" />
-                </Trigger>
-            </Style.Triggers>
-        </Style>
-
-        <Style x:Key="OverlayButtonStyle" TargetType="Button">
-            <Setter Property="Background" Value="#52101013" />
-            <Setter Property="BorderBrush" Value="#1FFFFFFF" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Foreground" Value="#FFE7E9EE" />
+            <Setter Property="Foreground" Value="#FFB8BBC4" />
+            <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
-                    <ControlTemplate TargetType="Button">
+                    <ControlTemplate TargetType="ToggleButton">
                         <Border Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="18">
+                                CornerRadius="20">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center" />
                         </Border>
@@ -83,12 +36,65 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#8050525A" />
-                    <Setter Property="BorderBrush" Value="#47FFFFFF" />
+                    <Setter Property="Background" Value="#66585B65" />
+                    <Setter Property="BorderBrush" Value="#66FFFFFF" />
+                    <Setter Property="Foreground" Value="White" />
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="#D05B70E8" />
+                    <Setter Property="BorderBrush" Value="#BFA7B4FF" />
+                    <Setter Property="Foreground" Value="White" />
+                </Trigger>
+                <MultiTrigger>
+                    <MultiTrigger.Conditions>
+                        <Condition Property="IsChecked" Value="True" />
+                        <Condition Property="IsMouseOver" Value="True" />
+                    </MultiTrigger.Conditions>
+                    <Setter Property="Background" Value="#F06B80F2" />
+                </MultiTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="CloseButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="40" />
+            <Setter Property="Height" Value="40" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="#38101012" />
+            <Setter Property="BorderBrush" Value="#38FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="#FFD9DBE1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="20">
+                            <Viewbox Width="14"
+                                     Height="14"
+                                     HorizontalAlignment="Center"
+                                     VerticalAlignment="Center">
+                                <TextBlock HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           FontFamily="Segoe UI"
+                                           FontWeight="SemiBold"
+                                           Foreground="{TemplateBinding Foreground}"
+                                           Text="×"
+                                           TextAlignment="Center" />
+                            </Viewbox>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#66585B65" />
+                    <Setter Property="BorderBrush" Value="#66FFFFFF" />
                     <Setter Property="Foreground" Value="White" />
                 </Trigger>
                 <Trigger Property="IsPressed" Value="True">
-                    <Setter Property="Background" Value="#A060626B" />
+                    <Setter Property="Background" Value="#8870747F" />
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -96,108 +102,168 @@
 
     <Grid>
         <Border x:Name="CollapsedShell"
-                Width="64"
-                Height="64"
+                Width="72"
+                Height="72"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Center"
-                CornerRadius="32"
+                CornerRadius="36"
                 Cursor="Hand"
-                MouseLeftButtonDown="OnCollapsedMouseLeftButtonDown"
-                Style="{StaticResource OverlayShellStyle}">
-            <Ellipse Width="32"
-                     Height="32"
-                     Fill="{StaticResource GeminiGradientBrush}">
-                <Ellipse.Effect>
-                    <DropShadowEffect BlurRadius="12"
-                                      Opacity="0.55"
-                                      ShadowDepth="0"
-                                      Color="#FF6B8FF0" />
-                </Ellipse.Effect>
-            </Ellipse>
+                MouseLeftButtonDown="OnCollapsedMouseLeftButtonDown">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Background" Value="#FF1A1A1A" />
+                    <Setter Property="BorderBrush" Value="#26FFFFFF" />
+                    <Setter Property="BorderThickness" Value="1" />
+                    <Setter Property="Opacity" Value="0.80" />
+                    <Setter Property="Effect">
+                        <Setter.Value>
+                            <DropShadowEffect BlurRadius="22" Direction="270" Opacity="0.55"
+                                              ShadowDepth="4" Color="#FF050509" />
+                        </Setter.Value>
+                    </Setter>
+                    <Style.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="#FF101012" />
+                            <Setter Property="Opacity" Value="0.92" />
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <Grid Width="52" Height="52">
+                <Grid.Triggers>
+                    <EventTrigger RoutedEvent="Loaded">
+                        <BeginStoryboard>
+                            <Storyboard RepeatBehavior="Forever">
+                                <DoubleAnimation Storyboard.TargetName="CollapsedGradientRotation"
+                                                 Storyboard.TargetProperty="Angle"
+                                                 From="0" To="360" Duration="0:0:6" />
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </EventTrigger>
+                </Grid.Triggers>
+                <Ellipse>
+                    <Ellipse.Fill>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                            <LinearGradientBrush.RelativeTransform>
+                                <RotateTransform x:Name="CollapsedGradientRotation"
+                                                 CenterX="0.5" CenterY="0.5" />
+                            </LinearGradientBrush.RelativeTransform>
+                            <GradientStop Offset="0" Color="#FF55D6F4" />
+                            <GradientStop Offset="0.34" Color="#FF4F8DF7" />
+                            <GradientStop Offset="0.68" Color="#FF8064E8" />
+                            <GradientStop Offset="1" Color="#FFD25DD1" />
+                        </LinearGradientBrush>
+                    </Ellipse.Fill>
+                    <Ellipse.Effect>
+                        <DropShadowEffect BlurRadius="14" Opacity="0.65" ShadowDepth="0"
+                                          Color="#FF637FEF" />
+                    </Ellipse.Effect>
+                </Ellipse>
+            </Grid>
         </Border>
 
-        <Border x:Name="ExpandedShell"
-                Height="64"
-                Margin="4"
-                CornerRadius="32"
-                MouseLeftButtonDown="OnExpandedMouseLeftButtonDown"
-                Style="{StaticResource OverlayShellStyle}">
-            <Grid Margin="12,8">
+        <Grid x:Name="ExpandedShell"
+              Background="Transparent"
+              MouseLeftButtonDown="OnExpandedMouseLeftButtonDown">
+            <Border x:Name="ExpandedPill"
+                    Height="56"
+                    Margin="4,0"
+                    VerticalAlignment="Center"
+                    CornerRadius="28">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="#FF1A1A1A" />
+                        <Setter Property="BorderBrush" Value="#26FFFFFF" />
+                        <Setter Property="BorderThickness" Value="1" />
+                        <Setter Property="Opacity" Value="0.80" />
+                        <Setter Property="Effect">
+                            <Setter.Value>
+                                <DropShadowEffect BlurRadius="22" Direction="270" Opacity="0.55"
+                                                  ShadowDepth="4" Color="#FF050509" />
+                            </Setter.Value>
+                        </Setter>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsMouseOver, ElementName=ExpandedShell}" Value="True">
+                                <Setter Property="Background" Value="#FF101012" />
+                                <Setter Property="Opacity" Value="0.92" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+            </Border>
+
+            <Grid Width="252" Height="76"
+                  HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="48" />
-                    <ColumnDefinition Width="12" />
-                    <ColumnDefinition Width="72" />
-                    <ColumnDefinition Width="12" />
-                    <ColumnDefinition Width="48" />
-                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="40" />
+                    <ColumnDefinition Width="18" />
+                    <ColumnDefinition Width="76" />
+                    <ColumnDefinition Width="18" />
+                    <ColumnDefinition Width="40" />
+                    <ColumnDefinition Width="18" />
                     <ColumnDefinition Width="40" />
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0"
-                        Width="36"
-                        Height="36"
-                        ToolTip="Screen-share control coming in Phase 5b"
-                        Style="{StaticResource PlaceholderStyle}">
-                    <TextBlock HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               FontFamily="Segoe MDL2 Assets"
-                               FontSize="16"
-                               Foreground="#FFE1E4EA"
+                <ToggleButton Grid.Column="0" IsChecked="True"
+                              Style="{StaticResource SideToggleStyle}"
+                              ToolTip="Toggle screen-share appearance">
+                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
+                               FontFamily="Segoe MDL2 Assets" FontSize="17"
+                               Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
                                Text="&#xE7F4;" />
-                </Border>
+                </ToggleButton>
 
-                <Border x:Name="ExpandedCenter"
-                        Grid.Column="2"
-                        Width="64"
-                        Height="48"
-                        CornerRadius="24"
-                        Cursor="Hand"
-                        MouseLeftButtonDown="OnExpandedCenterMouseLeftButtonDown"
-                        ToolTip="Collapse overlay">
-                    <Border.Background>
-                        <StaticResource ResourceKey="GeminiGradientBrush" />
-                    </Border.Background>
-                    <Border.Effect>
-                        <DropShadowEffect BlurRadius="14"
-                                          Opacity="0.45"
-                                          ShadowDepth="0"
-                                          Color="#FF716FE8" />
-                    </Border.Effect>
-                    <TextBlock HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               FontSize="18"
-                               Foreground="White"
-                               Text="•••" />
-                </Border>
+                <Grid x:Name="ExpandedCenter" Grid.Column="2"
+                      Width="76" Height="76" Cursor="Hand"
+                      MouseLeftButtonDown="OnExpandedCenterMouseLeftButtonDown"
+                      ToolTip="Collapse overlay">
+                    <Grid.Triggers>
+                        <EventTrigger RoutedEvent="Loaded">
+                            <BeginStoryboard>
+                                <Storyboard RepeatBehavior="Forever">
+                                    <DoubleAnimation Storyboard.TargetName="ExpandedGradientRotation"
+                                                     Storyboard.TargetProperty="Angle"
+                                                     From="0" To="360" Duration="0:0:6" />
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </EventTrigger>
+                    </Grid.Triggers>
+                    <Ellipse>
+                        <Ellipse.Fill>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                <LinearGradientBrush.RelativeTransform>
+                                    <RotateTransform x:Name="ExpandedGradientRotation"
+                                                     CenterX="0.5" CenterY="0.5" />
+                                </LinearGradientBrush.RelativeTransform>
+                                <GradientStop Offset="0" Color="#FF55D6F4" />
+                                <GradientStop Offset="0.34" Color="#FF4F8DF7" />
+                                <GradientStop Offset="0.68" Color="#FF8064E8" />
+                                <GradientStop Offset="1" Color="#FFD25DD1" />
+                            </LinearGradientBrush>
+                        </Ellipse.Fill>
+                        <Ellipse.Effect>
+                            <DropShadowEffect BlurRadius="16" Opacity="0.72" ShadowDepth="0"
+                                              Color="#FF637FEF" />
+                        </Ellipse.Effect>
+                    </Ellipse>
+                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
+                               FontSize="20" Foreground="White" Text="•••" />
+                </Grid>
 
-                <Border Grid.Column="4"
-                        Width="36"
-                        Height="36"
-                        ToolTip="Microphone control coming in Phase 5b"
-                        Style="{StaticResource PlaceholderStyle}">
-                    <TextBlock HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               FontFamily="Segoe MDL2 Assets"
-                               FontSize="16"
-                               Foreground="#FFE1E4EA"
+                <ToggleButton Grid.Column="4" IsChecked="True"
+                              Style="{StaticResource SideToggleStyle}"
+                              ToolTip="Toggle microphone appearance">
+                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
+                               FontFamily="Segoe MDL2 Assets" FontSize="17"
+                               Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
                                Text="&#xE720;" />
-                </Border>
+                </ToggleButton>
 
-                <Button x:Name="CloseButton"
-                        Grid.Column="6"
-                        Width="32"
-                        Height="32"
-                        Padding="0"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
+                <Button x:Name="CloseButton" Grid.Column="6"
                         Click="OnCloseClick"
-                        Content="×"
-                        Cursor="Hand"
-                        FontFamily="Segoe UI"
-                        FontSize="20"
-                        Style="{StaticResource OverlayButtonStyle}"
+                        Style="{StaticResource CloseButtonStyle}"
                         ToolTip="Close session" />
             </Grid>
-        </Border>
+        </Grid>
     </Grid>
 </Window>
