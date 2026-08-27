@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using GeminiLiveShare.Core.Gemini;
 
 namespace GeminiLiveShare.App.Views;
@@ -23,10 +24,12 @@ public partial class OverlayWindow : Window
             _sessionOrchestrator.SessionStateChanged += OnSessionStateChanged;
             _sessionOrchestrator.ScreenShareStateChanged += OnMediaStateChanged;
             _sessionOrchestrator.MicrophoneStateChanged += OnMediaStateChanged;
+            _sessionOrchestrator.SpeakingStateChanged += OnSpeakingStateChanged;
         }
 
         Closed += OnClosed;
         UpdateMediaState();
+        UpdateSpeakingState();
         UpdateVisualState();
     }
 
@@ -80,6 +83,11 @@ public partial class OverlayWindow : Window
 
     private void OnMediaStateChanged(object? sender, EventArgs e) => DispatchMediaStateUpdate();
 
+    private void OnSpeakingStateChanged(object? sender, EventArgs e)
+    {
+        _ = Dispatcher.InvokeAsync(UpdateSpeakingState);
+    }
+
     private void DispatchMediaStateUpdate()
     {
         _ = Dispatcher.InvokeAsync(UpdateMediaState);
@@ -94,6 +102,23 @@ public partial class OverlayWindow : Window
         MicrophoneButton.IsChecked = hasActiveSession && _sessionOrchestrator!.IsMicrophoneOn;
     }
 
+    private void UpdateSpeakingState()
+    {
+        bool isSpeaking = _sessionOrchestrator?.IsSpeaking == true;
+        Storyboard expandedPulse = (Storyboard)FindResource("ExpandedSpeakingPulse");
+        Storyboard collapsedPulse = (Storyboard)FindResource("CollapsedSpeakingPulse");
+
+        if (isSpeaking)
+        {
+            expandedPulse.Begin(this, true);
+            collapsedPulse.Begin(this, true);
+            return;
+        }
+
+        expandedPulse.Remove(this);
+        collapsedPulse.Remove(this);
+    }
+
     private void OnClosed(object? sender, EventArgs e)
     {
         if (_sessionOrchestrator is null)
@@ -104,6 +129,7 @@ public partial class OverlayWindow : Window
         _sessionOrchestrator.SessionStateChanged -= OnSessionStateChanged;
         _sessionOrchestrator.ScreenShareStateChanged -= OnMediaStateChanged;
         _sessionOrchestrator.MicrophoneStateChanged -= OnMediaStateChanged;
+        _sessionOrchestrator.SpeakingStateChanged -= OnSpeakingStateChanged;
     }
 
     private void OnCollapsedMouseLeftButtonDown(object sender, MouseButtonEventArgs e)

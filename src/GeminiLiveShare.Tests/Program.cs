@@ -18,6 +18,7 @@ ValidateOutputTranscriptionAccumulation();
 ValidateReconnectPolicy();
 await ValidateChatHistoryAsync();
 await ValidateMediaPauseAndRestoreAsync();
+await ValidateSpeakingStateAsync();
 Console.WriteLine("Credential filtering, Live protocol, reconnect, and chat-history validation passed.");
 
 static void ValidateMatcher()
@@ -255,6 +256,33 @@ static async Task ValidateMediaPauseAndRestoreAsync()
     await orchestrator.StopAsync();
 }
 
+static async Task ValidateSpeakingStateAsync()
+{
+    FakeLiveClient client = new();
+    await using SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(), new FakeAudioPlayback(), client, new FakeScreenCapture(),
+        new FakeImageProcessing(), new FakeChatHistory());
+
+    await orchestrator.StartAsync("test-key");
+    client.ReceiveAudio(new byte[] { 1, 2 });
+    Require(orchestrator.IsSpeaking, "Gemini audio did not set speaking state");
+    await WaitUntilAsync(() => !orchestrator.IsSpeaking, "speaking state did not clear after silence");
+
+    client.ReceiveAudio(new byte[] { 3 });
+    client.Interrupt();
+    Require(!orchestrator.IsSpeaking, "interruption did not clear speaking state");
+
+    client.ReceiveAudio(new byte[] { 4 });
+    client.SetAvailable(false);
+    await WaitUntilAsync(() => !orchestrator.IsSpeaking, "disconnect did not clear speaking state");
+
+    client.SetAvailable(true);
+    await WaitUntilAsync(() => orchestrator.IsRunning, "session did not remain active after reconnect");
+    client.ReceiveAudio(new byte[] { 5 });
+    await orchestrator.StopAsync();
+    Require(!orchestrator.IsSpeaking, "stopping the session did not clear speaking state");
+}
+
 static async Task WaitUntilAsync(Func<bool> condition, string failureMessage)
 {
     for (int attempt = 0; attempt < 100; attempt++)
@@ -320,8 +348,8 @@ file sealed class FakeAudioPlayback : IAudioPlaybackService
 
 file sealed class FakeLiveClient : IGeminiLiveClient
 {
-    public event EventHandler<byte[]>? AudioReceived { add { } remove { } }
-    public event EventHandler? Interrupted { add { } remove { } }
+    public event EventHandler<byte[]>? AudioReceived;
+    public event EventHandler? Interrupted;
     public event EventHandler<string>? StatusChanged { add { } remove { } }
     public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived { add { } remove { } }
     public event EventHandler<ConnectionAvailabilityChangedEventArgs>? ConnectionAvailabilityChanged;
@@ -349,6 +377,10 @@ file sealed class FakeLiveClient : IGeminiLiveClient
         IsConnected = available;
         ConnectionAvailabilityChanged?.Invoke(this, new ConnectionAvailabilityChangedEventArgs(available));
     }
+
+    public void ReceiveAudio(byte[] audio) => AudioReceived?.Invoke(this, audio);
+
+    public void Interrupt() => Interrupted?.Invoke(this, EventArgs.Empty);
 }
 
 file sealed class FakeScreenCapture : IScreenCaptureService

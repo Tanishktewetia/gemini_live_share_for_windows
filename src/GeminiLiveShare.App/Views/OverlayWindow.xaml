@@ -102,11 +102,28 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+
+        <Storyboard x:Key="CollapsedSpeakingPulse" RepeatBehavior="Forever" AutoReverse="True">
+            <DoubleAnimation Storyboard.TargetName="CollapsedCenterScale"
+                             Storyboard.TargetProperty="ScaleX"
+                             From="1" To="1.15" Duration="0:0:0.32" />
+            <DoubleAnimation Storyboard.TargetName="CollapsedCenterScale"
+                             Storyboard.TargetProperty="ScaleY"
+                             From="1" To="1.15" Duration="0:0:0.32" />
+        </Storyboard>
+        <Storyboard x:Key="ExpandedSpeakingPulse" RepeatBehavior="Forever" AutoReverse="True">
+            <DoubleAnimation Storyboard.TargetName="ExpandedCenterScale"
+                             Storyboard.TargetProperty="ScaleX"
+                             From="1" To="1.15" Duration="0:0:0.32" />
+            <DoubleAnimation Storyboard.TargetName="ExpandedCenterScale"
+                             Storyboard.TargetProperty="ScaleY"
+                             From="1" To="1.15" Duration="0:0:0.32" />
+        </Storyboard>
     </Window.Resources>
 
     <Window.Triggers>
         <EventTrigger RoutedEvent="Window.Loaded">
-            <BeginStoryboard>
+            <BeginStoryboard x:Name="AmbientGradientRotation">
                 <Storyboard RepeatBehavior="Forever">
                     <DoubleAnimation Storyboard.TargetName="CollapsedGradientEllipse"
                                      Storyboard.TargetProperty="(Shape.Fill).(Brush.RelativeTransform).(RotateTransform.Angle)"
@@ -152,7 +169,10 @@
                     </Style.Triggers>
                 </Style>
             </Border.Style>
-            <Grid Width="52" Height="52">
+            <Grid Width="52" Height="52" RenderTransformOrigin="0.5,0.5">
+                <Grid.RenderTransform>
+                    <ScaleTransform x:Name="CollapsedCenterScale" ScaleX="1" ScaleY="1" />
+                </Grid.RenderTransform>
                 <Ellipse x:Name="CollapsedGradientEllipse">
                     <Ellipse.Fill>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
@@ -233,8 +253,12 @@
 
                 <Grid x:Name="ExpandedCenter" Grid.Column="2"
                       Width="76" Height="76" Cursor="Hand"
+                      RenderTransformOrigin="0.5,0.5"
                       MouseLeftButtonDown="OnExpandedCenterMouseLeftButtonDown"
                       ToolTip="Collapse overlay">
+                    <Grid.RenderTransform>
+                        <ScaleTransform x:Name="ExpandedCenterScale" ScaleX="1" ScaleY="1" />
+                    </Grid.RenderTransform>
                     <Ellipse x:Name="ExpandedGradientEllipse">
                         <Ellipse.Fill>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">

@@ -9,6 +9,7 @@ namespace GeminiLiveShare.Core.Gemini;
 public sealed class SessionOrchestrator : IAsyncDisposable
 {
     private const int MicrophoneQueueCapacity = 4;
+    private static readonly TimeSpan SpeakingSilenceThreshold = TimeSpan.FromMilliseconds(350);
     private const string SanitizedFrameDirectory = @"C:\Temp\gemini-frames";
 
     private readonly IAudioCaptureService _audioCapture;
@@ -24,6 +25,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private Channel<byte[]>? _microphoneAudio;
     private Task? _microphoneSendTask;
     private Task? _videoTask;
+    private CancellationTokenSource? _speakingCancellation;
     private string? _sessionId;
     private bool _microphoneDesired;
     private bool _screenShareDesired;
@@ -59,11 +61,15 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     public event EventHandler? SessionStateChanged;
 
+    public event EventHandler? SpeakingStateChanged;
+
     public bool IsRunning { get; private set; }
 
     public bool IsMicrophoneOn { get; private set; }
 
     public bool IsScreenShareOn { get; private set; }
+
+    public bool IsSpeaking { get; private set; }
 
     public async Task StartAsync(string apiKey, CancellationToken cancellationToken = default)
     {
@@ -123,6 +129,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             }
 
             SetRunningState(false);
+            StopSpeaking();
             _microphoneDesired = false;
             _screenShareDesired = false;
             SetMicrophoneState(false);
@@ -246,10 +253,21 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _microphoneAudio?.Writer.TryWrite(audio);
     }
 
-    private void OnAudioReceived(object? sender, byte[] audio) => _audioPlayback.Play(audio);
+    private void OnAudioReceived(object? sender, byte[] audio)
+    {
+        if (!IsRunning || audio.Length == 0)
+        {
+            return;
+        }
+
+        _audioPlayback.Play(audio);
+        SetSpeakingState(true);
+        RestartSpeakingSilenceTimer();
+    }
 
     private void OnInterrupted(object? sender, EventArgs e)
     {
+        StopSpeaking();
         _audioPlayback.Clear();
         StatusChanged?.Invoke(this, "Gemini response interrupted by user speech");
     }
@@ -299,6 +317,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
             if (!e.IsAvailable)
             {
+                StopSpeaking();
                 _audioCapture.Stop();
                 SetMicrophoneState(false);
                 await StopMediaAsync().ConfigureAwait(false);
@@ -539,5 +558,52 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         IsRunning = isRunning;
         SessionStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void RestartSpeakingSilenceTimer()
+    {
+        CancellationTokenSource cancellation = new();
+        CancellationTokenSource? previous = Interlocked.Exchange(ref _speakingCancellation, cancellation);
+        previous?.Cancel();
+        previous?.Dispose();
+        _ = ClearSpeakingAfterSilenceAsync(cancellation);
+    }
+
+    private async Task ClearSpeakingAfterSilenceAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await Task.Delay(SpeakingSilenceThreshold, cancellation.Token).ConfigureAwait(false);
+            if (Interlocked.CompareExchange(ref _speakingCancellation, null, cancellation) == cancellation)
+            {
+                SetSpeakingState(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            cancellation.Dispose();
+        }
+    }
+
+    private void StopSpeaking()
+    {
+        CancellationTokenSource? cancellation = Interlocked.Exchange(ref _speakingCancellation, null);
+        cancellation?.Cancel();
+        cancellation?.Dispose();
+        SetSpeakingState(false);
+    }
+
+    private void SetSpeakingState(bool isSpeaking)
+    {
+        if (IsSpeaking == isSpeaking)
+        {
+            return;
+        }
+
+        IsSpeaking = isSpeaking;
+        SpeakingStateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
