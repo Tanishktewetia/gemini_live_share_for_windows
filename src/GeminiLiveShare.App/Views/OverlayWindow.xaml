@@ -28,9 +28,25 @@
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="20">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center" />
+                            <Grid Width="40" Height="40">
+                                <ContentPresenter HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center" />
+                                <Line x:Name="InactiveSlash"
+                                      X1="11" Y1="29"
+                                      X2="29" Y2="11"
+                                      Stroke="White"
+                                      StrokeThickness="2.25"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round" />
+                            </Grid>
                         </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="InactiveSlash"
+                                        Property="Visibility"
+                                        Value="Collapsed" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -40,18 +56,6 @@
                     <Setter Property="BorderBrush" Value="#66FFFFFF" />
                     <Setter Property="Foreground" Value="White" />
                 </Trigger>
-                <Trigger Property="IsChecked" Value="True">
-                    <Setter Property="Background" Value="#D05B70E8" />
-                    <Setter Property="BorderBrush" Value="#BFA7B4FF" />
-                    <Setter Property="Foreground" Value="White" />
-                </Trigger>
-                <MultiTrigger>
-                    <MultiTrigger.Conditions>
-                        <Condition Property="IsChecked" Value="True" />
-                        <Condition Property="IsMouseOver" Value="True" />
-                    </MultiTrigger.Conditions>
-                    <Setter Property="Background" Value="#F06B80F2" />
-                </MultiTrigger>
             </Style.Triggers>
         </Style>
 
@@ -59,10 +63,10 @@
             <Setter Property="Width" Value="40" />
             <Setter Property="Height" Value="40" />
             <Setter Property="Padding" Value="0" />
-            <Setter Property="Background" Value="#38101012" />
+            <Setter Property="Background" Value="#4D35383F" />
             <Setter Property="BorderBrush" Value="#38FFFFFF" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Foreground" Value="#FFD9DBE1" />
+            <Setter Property="Foreground" Value="#FFFFFFFF" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
@@ -100,6 +104,25 @@
         </Style>
     </Window.Resources>
 
+    <Window.Triggers>
+        <EventTrigger RoutedEvent="Window.Loaded">
+            <BeginStoryboard>
+                <Storyboard RepeatBehavior="Forever">
+                    <DoubleAnimation Storyboard.TargetName="CollapsedGradientEllipse"
+                                     Storyboard.TargetProperty="(Shape.Fill).(Brush.RelativeTransform).(RotateTransform.Angle)"
+                                     From="0"
+                                     To="360"
+                                     Duration="0:0:6" />
+                    <DoubleAnimation Storyboard.TargetName="ExpandedGradientEllipse"
+                                     Storyboard.TargetProperty="(Shape.Fill).(Brush.RelativeTransform).(RotateTransform.Angle)"
+                                     From="0"
+                                     To="360"
+                                     Duration="0:0:6" />
+                </Storyboard>
+            </BeginStoryboard>
+        </EventTrigger>
+    </Window.Triggers>
+
     <Grid>
         <Border x:Name="CollapsedShell"
                 Width="72"
@@ -130,23 +153,11 @@
                 </Style>
             </Border.Style>
             <Grid Width="52" Height="52">
-                <Grid.Triggers>
-                    <EventTrigger RoutedEvent="Loaded">
-                        <BeginStoryboard>
-                            <Storyboard RepeatBehavior="Forever">
-                                <DoubleAnimation Storyboard.TargetName="CollapsedGradientRotation"
-                                                 Storyboard.TargetProperty="Angle"
-                                                 From="0" To="360" Duration="0:0:6" />
-                            </Storyboard>
-                        </BeginStoryboard>
-                    </EventTrigger>
-                </Grid.Triggers>
-                <Ellipse>
+                <Ellipse x:Name="CollapsedGradientEllipse">
                     <Ellipse.Fill>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                             <LinearGradientBrush.RelativeTransform>
-                                <RotateTransform x:Name="CollapsedGradientRotation"
-                                                 CenterX="0.5" CenterY="0.5" />
+                                <RotateTransform CenterX="0.5" CenterY="0.5" />
                             </LinearGradientBrush.RelativeTransform>
                             <GradientStop Offset="0" Color="#FF55D6F4" />
                             <GradientStop Offset="0.34" Color="#FF4F8DF7" />
@@ -196,6 +207,7 @@
                   HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="40" />
+                    <!-- Equal 18px gaps separate all four controls. -->
                     <ColumnDefinition Width="18" />
                     <ColumnDefinition Width="76" />
                     <ColumnDefinition Width="18" />
@@ -217,23 +229,11 @@
                       Width="76" Height="76" Cursor="Hand"
                       MouseLeftButtonDown="OnExpandedCenterMouseLeftButtonDown"
                       ToolTip="Collapse overlay">
-                    <Grid.Triggers>
-                        <EventTrigger RoutedEvent="Loaded">
-                            <BeginStoryboard>
-                                <Storyboard RepeatBehavior="Forever">
-                                    <DoubleAnimation Storyboard.TargetName="ExpandedGradientRotation"
-                                                     Storyboard.TargetProperty="Angle"
-                                                     From="0" To="360" Duration="0:0:6" />
-                                </Storyboard>
-                            </BeginStoryboard>
-                        </EventTrigger>
-                    </Grid.Triggers>
-                    <Ellipse>
+                    <Ellipse x:Name="ExpandedGradientEllipse">
                         <Ellipse.Fill>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                                 <LinearGradientBrush.RelativeTransform>
-                                    <RotateTransform x:Name="ExpandedGradientRotation"
-                                                     CenterX="0.5" CenterY="0.5" />
+                                    <RotateTransform CenterX="0.5" CenterY="0.5" />
                                 </LinearGradientBrush.RelativeTransform>
                                 <GradientStop Offset="0" Color="#FF55D6F4" />
                                 <GradientStop Offset="0.34" Color="#FF4F8DF7" />
