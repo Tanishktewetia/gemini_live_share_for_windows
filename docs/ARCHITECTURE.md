@@ -35,7 +35,7 @@ team/billing features. Local-first, single binary, single user.
 
 No backend server. No cloud DB. Everything lives on the user's machine.
 
-**PHASE 3B STATUS: Integrated.** OCR-based backup credential detection now runs independently alongside Phase 3a on every protected frame, using the separately validated `SoftwareBitmap` OCR path. OCR failures and its 500 ms timeout are isolated to that pass and contribute zero rectangles without disabling UI Automation or the video pipeline. The persisted Sensitive Content Filtering setting controls both passes and defaults to enabled.
+**PHASE 3B STATUS: Integrated and hardened.** OCR-based backup credential detection runs alongside Phase 3a on every protected frame, using the separately validated `SoftwareBitmap` OCR path. UI Automation scans visible password controls across the desktop rather than only the foreground window. OCR handles credential labels and values split across adjacent lines and pads matched regions. Both passes run concurrently with independent 500 ms limits; either protection pass failing drops the frame before encoding. The exact sanitized JPEG is saved to `C:\Temp\gemini-frames` before it is submitted to Gemini; save failure also drops the frame. The persisted Sensitive Content Filtering setting controls both passes and defaults to enabled.
 
 ---
 
@@ -223,7 +223,7 @@ run and verify — don't let Claude Code jump ahead to later phases.
 
 #### Known limitations
 
-**PHASE 3A ADDITIONAL LIMITATION:** Credential blur reliability decreases when multiple windows are arranged/tiled on screen simultaneously (e.g. 4 windows snapped to quadrants). In this configuration, blur may intermittently fail to apply to a visible password field even though it works reliably when that window is used in isolation (maximized or alone in focus). Blur also lags noticeably during active window dragging. Root cause not yet diagnosed — likely related to foreground window detection or UI Automation tree state during rapid window arrangement changes. Deferred for future investigation. Recommendation for current use: avoid displaying sensitive fields while actively rearranging windows; prefer single-window-focus workflows when screen-sharing with credentials visible.
+**PHASE 3A LIMITATION:** The desktop-wide UI Automation pass now protects visible password controls in tiled/background windows. During rapid window dragging or shell task-switching transitions, frames are still dropped when control coordinates cannot be associated safely with the captured pixels.
 
 ### Phase 4 — Persistence & reliability
 - `ChatHistoryRepository` (SQLite): log Gemini's `inputTranscription` /

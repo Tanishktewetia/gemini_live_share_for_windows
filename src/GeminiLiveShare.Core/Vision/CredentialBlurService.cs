@@ -12,7 +12,7 @@ namespace GeminiLiveShare.Core.Vision;
 
 public sealed partial class CredentialBlurService : ICredentialBlurService
 {
-    private static readonly TimeSpan LookupTimeout = TimeSpan.FromMilliseconds(150);
+    private static readonly TimeSpan LookupTimeout = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan SlowLookupThreshold = TimeSpan.FromMilliseconds(50);
     private readonly object _lookupLock = new();
     private Task<PasswordLookupResult>? _activeLookup;
@@ -121,8 +121,13 @@ public sealed partial class CredentialBlurService : ICredentialBlurService
             return PasswordLookupResult.Failure(foregroundWindow);
         }
 
-        AutomationElement root = AutomationElement.FromHandle(foregroundWindow);
-        AutomationCondition passwordCondition = new PropertyCondition(AutomationElement.IsPasswordProperty, true);
+        // The captured monitor contains every visible tiled window, not only the foreground one.
+        // Search the desktop tree so background browser, WPF, Win32, and UWP password controls are
+        // protected too. IsOffscreen avoids stale controls on hidden/minimized windows.
+        AutomationElement root = AutomationElement.RootElement;
+        AutomationCondition passwordCondition = new AndCondition(
+            new PropertyCondition(AutomationElement.IsPasswordProperty, true),
+            new PropertyCondition(AutomationElement.IsOffscreenProperty, false));
         AutomationElementCollection passwordElements = root.FindAll(TreeScope.Descendants, passwordCondition);
         List<AutomationElement> elements = new(passwordElements.Count);
         foreach (AutomationElement element in passwordElements)

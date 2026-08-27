@@ -58,33 +58,22 @@ public sealed class ImageProcessingService : IImageProcessingService
 
         if (_filterSettings.IsEnabled)
         {
-            // Privacy-critical ordering: both independent passes process the full-resolution frame.
-            bool uiAutomationSucceeded = await _credentialBlur
-                .BlurPasswordFieldsAsync(source, cancellationToken)
-                .ConfigureAwait(false);
+            // Both passes inspect the same captured instant and use separate pixel representations.
+            // Running them concurrently keeps their independent 500 ms ceilings inside the 1 FPS
+            // budget. Only UI Automation mutates source; OCR reads bgraFrame and returns rectangles.
+            Task<bool> uiAutomationTask = _credentialBlur
+                .BlurPasswordFieldsAsync(source, cancellationToken);
+            Task<IReadOnlyList<SKRect>?> ocrTask = DetectOcrBoundsAsync(bgraFrame, cancellationToken);
 
-            IReadOnlyList<SKRect> ocrBounds;
-            try
-            {
-                ocrBounds = await _ocrCredentialDetector
-                    .DetectAsync(bgraFrame, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Sandboxed OCR pass failed; using zero OCR rectangles for this frame: {ex}");
-                ocrBounds = Array.Empty<SKRect>();
-            }
+            bool uiAutomationSucceeded = await uiAutomationTask.ConfigureAwait(false);
+            IReadOnlyList<SKRect>? ocrBounds = await ocrTask.ConfigureAwait(false);
 
-            ApplyBlackBoxes(source, ocrBounds);
-            if (!uiAutomationSucceeded)
+            if (!uiAutomationSucceeded || ocrBounds is null)
             {
                 return null;
             }
+
+            ApplyBlackBoxes(source, ocrBounds);
         }
 
         if (processingTime.Elapsed > FrameProcessingBudget)
@@ -112,6 +101,25 @@ public sealed class ImageProcessingService : IImageProcessingService
         }
 
         return Convert.ToBase64String(jpeg.ToArray());
+    }
+
+    private async Task<IReadOnlyList<SKRect>?> DetectOcrBoundsAsync(
+        SoftwareBitmap frame,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _ocrCredentialDetector.DetectAsync(frame, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"Sandboxed OCR pass failed; dropping frame before encoding: {ex}");
+            return null;
+        }
     }
 
     private static void ApplyBlackBoxes(SKBitmap frame, IReadOnlyList<SKRect> bounds)

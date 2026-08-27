@@ -9,6 +9,7 @@ namespace GeminiLiveShare.Core.Vision;
 public sealed class OcrCredentialDetector : IOcrCredentialDetector
 {
     private static readonly TimeSpan OcrTimeout = TimeSpan.FromMilliseconds(500);
+    private const float RectanglePadding = 8;
 
     public async Task<IReadOnlyList<SKRect>> DetectAsync(
         SoftwareBitmap frame,
@@ -32,10 +33,10 @@ public sealed class OcrCredentialDetector : IOcrCredentialDetector
             OcrResult result = await recognition.WaitAsync(OcrTimeout, cancellationToken).ConfigureAwait(false);
             return CredentialMatcher.Find(result)
                 .Select(match => new SKRect(
-                    (float)match.Bounds.X,
-                    (float)match.Bounds.Y,
-                    (float)(match.Bounds.X + match.Bounds.Width),
-                    (float)(match.Bounds.Y + match.Bounds.Height)))
+                    Math.Max(0, (float)match.Bounds.X - RectanglePadding),
+                    Math.Max(0, (float)match.Bounds.Y - RectanglePadding),
+                    Math.Min(frame.PixelWidth, (float)(match.Bounds.X + match.Bounds.Width) + RectanglePadding),
+                    Math.Min(frame.PixelHeight, (float)(match.Bounds.Y + match.Bounds.Height) + RectanglePadding)))
                 .ToList();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -44,13 +45,13 @@ public sealed class OcrCredentialDetector : IOcrCredentialDetector
         }
         catch (TimeoutException)
         {
-            Trace.WriteLine($"Windows OCR exceeded {OcrTimeout.TotalMilliseconds:0} ms; using zero OCR rectangles for this frame.");
-            return Array.Empty<SKRect>();
+            throw new InvalidOperationException(
+                $"Windows OCR exceeded {OcrTimeout.TotalMilliseconds:0} ms; the frame must be dropped.");
         }
         catch (Exception ex)
         {
-            Trace.WriteLine($"Windows OCR failed; using zero OCR rectangles for this frame: {ex}");
-            return Array.Empty<SKRect>();
+            Trace.WriteLine($"Windows OCR failed; the frame must be dropped: {ex}");
+            throw new InvalidOperationException("Windows OCR could not safely inspect the frame.", ex);
         }
     }
 }

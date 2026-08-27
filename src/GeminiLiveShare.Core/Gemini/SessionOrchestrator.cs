@@ -8,10 +8,7 @@ namespace GeminiLiveShare.Core.Gemini;
 public sealed class SessionOrchestrator : IAsyncDisposable
 {
     private const int MicrophoneQueueCapacity = 4;
-#if DEBUG
-    // TEMP DEBUG - remove after Phase 3a verification
-    private const bool SaveFramesForDebug = true;
-#endif
+    private const string SanitizedFrameDirectory = @"C:\Temp\gemini-frames";
 
     private readonly IAudioCaptureService _audioCapture;
     private readonly IAudioPlaybackService _audioPlayback;
@@ -293,34 +290,42 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
-#if DEBUG
-        // TEMP DEBUG - remove after Phase 3a verification
-        if (SaveFramesForDebug)
+        // Persist exactly the sanitized JPEG that will be sent. This is deliberately awaited:
+        // downstream Gemini processing is not permitted until the local blurred image exists.
+        if (!await SaveSanitizedFrameAsync(base64Jpeg, cancellationToken).ConfigureAwait(false))
         {
-            _ = Task.Run(() => SaveFrameForDebug(base64Jpeg));
+            StatusChanged?.Invoke(this, $"Sanitized frame could not be saved to {SanitizedFrameDirectory}; frame dropped.");
+            return;
         }
-#endif
+
         await _liveClient.SendVideoFrameAsync(base64Jpeg, cancellationToken).ConfigureAwait(false);
     }
 
-#if DEBUG
-    // TEMP DEBUG - remove after Phase 3a verification
-    private static void SaveFrameForDebug(string base64Jpeg)
+    private static async Task<bool> SaveSanitizedFrameAsync(
+        string base64Jpeg,
+        CancellationToken cancellationToken)
     {
         try
         {
-            const string outputDirectory = @"C:\Temp\gemini-frames";
-            Directory.CreateDirectory(outputDirectory);
+            Directory.CreateDirectory(SanitizedFrameDirectory);
             string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
-            string outputPath = Path.Combine(outputDirectory, $"frame_{timestamp}.jpg");
-            File.WriteAllBytes(outputPath, Convert.FromBase64String(base64Jpeg));
+            string outputPath = Path.Combine(SanitizedFrameDirectory, $"frame_{timestamp}.jpg");
+            await File.WriteAllBytesAsync(
+                outputPath,
+                Convert.FromBase64String(base64Jpeg),
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Trace.WriteLine($"Unable to save temporary debug frame: {ex.Message}");
+            System.Diagnostics.Trace.WriteLine($"Unable to save sanitized frame: {ex.Message}");
+            return false;
         }
     }
-#endif
 
     private async Task StopVideoSenderAsync()
     {
