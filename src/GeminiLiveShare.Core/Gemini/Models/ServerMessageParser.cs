@@ -9,6 +9,7 @@ internal sealed record ParsedServerMessage(
     bool Interrupted,
     string? InputTranscription,
     string? OutputTranscription,
+    bool TurnComplete,
     bool GoAway,
     string? GoAwayTimeLeft,
     bool? Resumable,
@@ -26,12 +27,15 @@ internal static class ServerMessageParser
 
         List<byte[]> audioChunks = [];
         bool interrupted = false;
+        bool turnComplete = false;
         string? inputTranscription = null;
         string? outputTranscription = null;
         if (root.TryGetProperty("serverContent", out JsonElement serverContent))
         {
             interrupted = serverContent.TryGetProperty("interrupted", out JsonElement interruptedElement) &&
                 interruptedElement.ValueKind == JsonValueKind.True;
+            turnComplete = serverContent.TryGetProperty("turnComplete", out JsonElement turnCompleteElement) &&
+                turnCompleteElement.ValueKind == JsonValueKind.True;
             inputTranscription = GetTranscription(serverContent, "inputTranscription");
             outputTranscription = GetTranscription(serverContent, "outputTranscription");
             ReadAudio(serverContent, audioChunks);
@@ -59,7 +63,7 @@ internal static class ServerMessageParser
 
         return new ParsedServerMessage(
             root.TryGetProperty("setupComplete", out _), error, audioChunks, interrupted,
-            inputTranscription, outputTranscription, goAway, timeLeft, resumable, newHandle);
+            inputTranscription, outputTranscription, turnComplete, goAway, timeLeft, resumable, newHandle);
     }
 
     private static string? GetTranscription(JsonElement serverContent, string propertyName)

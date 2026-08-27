@@ -14,6 +14,7 @@ ValidateMatcher();
 await ValidateSanitizationBeforeEncodingAsync();
 await ValidateDetectorFailureDropsFrameAsync();
 ValidateLiveProtocol();
+ValidateOutputTranscriptionAccumulation();
 ValidateReconnectPolicy();
 await ValidateChatHistoryAsync();
 await ValidateMediaPauseAndRestoreAsync();
@@ -128,6 +129,7 @@ static void ValidateLiveProtocol()
           "goAway": { "timeLeft": "10s" },
           "serverContent": {
             "interrupted": true,
+            "turnComplete": true,
             "inputTranscription": { "text": "hello" },
             "outputTranscription": { "text": "hi" },
             "modelTurn": { "parts": [
@@ -140,10 +142,26 @@ static void ValidateLiveProtocol()
     Require(parsed.Resumable == true && parsed.NewHandle == "handle-2", "session resumption update was not parsed");
     Require(parsed.GoAway && parsed.GoAwayTimeLeft == "10s", "goAway was not parsed");
     Require(parsed.Interrupted, "interruption was not parsed");
+    Require(parsed.TurnComplete, "turnComplete was not parsed");
     Require(parsed.InputTranscription == "hello" && parsed.OutputTranscription == "hi",
         "transcription text was not parsed");
     Require(parsed.AudioChunks.Count == 1 && parsed.AudioChunks[0].SequenceEqual(new byte[] { 1, 2, 3 }),
         "audio payload was not parsed");
+}
+
+static void ValidateOutputTranscriptionAccumulation()
+{
+    OutputTranscriptionAccumulator accumulator = new();
+    Require(accumulator.Process("Hallo! Wie", false, false) is null,
+        "assistant transcription was emitted before turn completion");
+    Require(accumulator.Process(" kann", false, false) is null,
+        "assistant transcription was emitted before turn completion");
+    Require(accumulator.Process(" ich dir", false, false) is null,
+        "assistant transcription was emitted before turn completion");
+    Require(accumulator.Process(" heute helfen?", false, false) is null,
+        "assistant transcription was emitted before turn completion");
+    Require(accumulator.Process(null, true, false) == "Hallo! Wie kann ich dir heute helfen?",
+        "assistant transcription chunks were not emitted as one complete turn");
 }
 
 static void ValidateReconnectPolicy()

@@ -12,6 +12,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
     private static readonly TimeSpan SetupTimeout = TimeSpan.FromSeconds(15);
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly object _stateLock = new();
+    private readonly OutputTranscriptionAccumulator _outputTranscription = new();
     private ClientWebSocket? _socket;
     private CancellationTokenSource? _sessionCancellation;
     private Task? _supervisorTask;
@@ -37,6 +38,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         }
 
         StatusChanged?.Invoke(this, "Connecting");
+        _outputTranscription.Clear();
         CancellationTokenSource sessionCancellation = new();
         TaskCompletionSource initialConnection = NewCompletionSource();
         lock (_stateLock)
@@ -331,7 +333,9 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             Interrupted?.Invoke(this, EventArgs.Empty);
         }
         EmitTranscription("user", message.InputTranscription);
-        EmitTranscription("assistant", message.OutputTranscription);
+        EmitTranscription(
+            "assistant",
+            _outputTranscription.Process(message.OutputTranscription, message.TurnComplete, message.Interrupted));
         foreach (byte[] audio in message.AudioChunks)
         {
             AudioReceived?.Invoke(this, audio);
