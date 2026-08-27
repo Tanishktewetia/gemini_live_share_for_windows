@@ -28,6 +28,12 @@
                     Margin="12,0,0,0"
                     Command="{Binding ToggleMicrophoneCommand}"
                     Content="{Binding MicrophoneLabel}" />
+            <!-- TEMP: manual test button for Phase 5a, remove after verification. -->
+            <Button Width="120"
+                    Height="36"
+                    Margin="12,0,0,0"
+                    Click="OnTestOverlayClick"
+                    Content="Test Overlay" />
         </StackPanel>
 
         <Border Grid.Row="1"

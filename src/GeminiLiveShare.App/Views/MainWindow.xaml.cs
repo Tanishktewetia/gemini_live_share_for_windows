@@ -28,4 +28,7 @@ public partial class MainWindow : Window
         };
         settingsWindow.ShowDialog();
     }
+
+    // TEMP: manual test button for Phase 5a, remove after verification.
+    private void OnTestOverlayClick(object sender, RoutedEventArgs e) => new OverlayWindow().Show();
 }
