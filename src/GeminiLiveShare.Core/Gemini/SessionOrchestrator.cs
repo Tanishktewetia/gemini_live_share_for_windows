@@ -63,6 +63,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     public event EventHandler? SpeakingStateChanged;
 
+    public event EventHandler? ConnectionStateChanged;
+
     public bool IsRunning { get; private set; }
 
     public bool IsMicrophoneOn { get; private set; }
@@ -70,6 +72,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     public bool IsScreenShareOn { get; private set; }
 
     public bool IsSpeaking { get; private set; }
+
+    public bool IsConnected => _liveClient.IsConnected;
+
+    public bool IsConnecting { get; private set; }
 
     public async Task StartAsync(string apiKey, CancellationToken cancellationToken = default)
     {
@@ -84,6 +90,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             CancellationTokenSource sessionCancellation = new();
             try
             {
+                SetConnectingState(true);
                 _sessionId = Guid.NewGuid().ToString("N");
                 await _liveClient.ConnectAsync(apiKey, cancellationToken).ConfigureAwait(false);
                 _audioPlayback.Start();
@@ -110,6 +117,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 _sessionId = null;
                 sessionCancellation.Dispose();
                 throw;
+            }
+            finally
+            {
+                SetConnectingState(false);
             }
         }
         finally
@@ -300,6 +311,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     private async void OnConnectionAvailabilityChanged(object? sender, ConnectionAvailabilityChangedEventArgs e)
     {
+        ConnectionStateChanged?.Invoke(this, EventArgs.Empty);
         // The initial connection becomes available while StartAsync still owns the lifecycle lock.
         // StartAsync starts media itself, so do not queue a duplicate start behind that lock.
         if (!IsRunning)
@@ -335,6 +347,17 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         {
             _lifecycleLock.Release();
         }
+    }
+
+    private void SetConnectingState(bool isConnecting)
+    {
+        if (IsConnecting == isConnecting)
+        {
+            return;
+        }
+
+        IsConnecting = isConnecting;
+        ConnectionStateChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void OnCaptureFailed(object? sender, AudioCaptureFailedEventArgs e)

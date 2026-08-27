@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Gemini Live Share Overlay"
-        Width="296"
+        Width="324"
         Height="96"
         AllowsTransparency="True"
         Background="Transparent"
@@ -12,6 +12,11 @@
         WindowStartupLocation="CenterScreen"
         WindowStyle="None">
     <Window.Resources>
+        <Storyboard x:Key="BufferingRotation" RepeatBehavior="Forever">
+            <DoubleAnimation Storyboard.TargetName="BufferingRotate"
+                             Storyboard.TargetProperty="Angle"
+                             From="0" To="360" Duration="0:0:0.9" />
+        </Storyboard>
         <Style x:Key="SideToggleStyle" TargetType="ToggleButton">
             <Setter Property="Width" Value="40" />
             <Setter Property="Height" Value="40" />
@@ -190,6 +195,13 @@
                                           Color="#FF637FEF" />
                     </Ellipse.Effect>
                 </Ellipse>
+                    <Ellipse x:Name="CollapsedBufferingIcon" Width="24" Height="24"
+                             Stroke="#55FFFFFF" StrokeThickness="3" Visibility="Collapsed"
+                             StrokeDashArray="1,2" RenderTransformOrigin="0.5,0.5">
+                        <Ellipse.RenderTransform>
+                            <RotateTransform x:Name="CollapsedBufferingRotate" />
+                        </Ellipse.RenderTransform>
+                    </Ellipse>
                 <TextBlock HorizontalAlignment="Center"
                            VerticalAlignment="Center"
                            FontSize="18"
@@ -228,12 +240,12 @@
                 </Border.Style>
             </Border>
 
-            <Grid Width="252" Height="76"
+            <Grid Width="280" Height="76"
                   HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="40" />
                     <!-- Equal 18px gaps separate all four controls. -->
-                    <ColumnDefinition Width="18" />
+                    <ColumnDefinition Width="46" />
                     <ColumnDefinition Width="76" />
                     <ColumnDefinition Width="18" />
                     <ColumnDefinition Width="40" />
@@ -245,11 +257,15 @@
                               Click="OnScreenShareClick"
                               Style="{StaticResource SideToggleStyle}"
                               ToolTip="Toggle screen share">
-                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
+                    <TextBlock x:Name="CollapsedReadyIcon" HorizontalAlignment="Center" VerticalAlignment="Center"
                                FontFamily="Segoe MDL2 Assets" FontSize="17"
                                Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
                                Text="&#xE7F4;" />
                 </ToggleButton>
+
+                <TextBlock x:Name="SessionDurationText" Grid.Column="1"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           FontSize="10" Foreground="#FFB8BBC4" Text="00:00" />
 
                 <Grid x:Name="ExpandedCenter" Grid.Column="2"
                       Width="76" Height="76" Cursor="Hand"
@@ -276,8 +292,15 @@
                                               Color="#FF637FEF" />
                         </Ellipse.Effect>
                     </Ellipse>
-                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
+                    <TextBlock x:Name="ExpandedReadyIcon" HorizontalAlignment="Center" VerticalAlignment="Center"
                                FontSize="20" Foreground="White" Text="•••" />
+                    <Ellipse x:Name="ExpandedBufferingIcon" Width="28" Height="28"
+                             Stroke="#55FFFFFF" StrokeThickness="3" Visibility="Collapsed"
+                             StrokeDashArray="1,2" RenderTransformOrigin="0.5,0.5">
+                        <Ellipse.RenderTransform>
+                            <RotateTransform x:Name="BufferingRotate" />
+                        </Ellipse.RenderTransform>
+                    </Ellipse>
                 </Grid>
 
                 <ToggleButton x:Name="MicrophoneButton" Grid.Column="4"

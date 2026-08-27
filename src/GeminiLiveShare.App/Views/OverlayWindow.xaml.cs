@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using GeminiLiveShare.Core.Gemini;
 
 namespace GeminiLiveShare.App.Views;
@@ -10,14 +11,20 @@ namespace GeminiLiveShare.App.Views;
 public partial class OverlayWindow : Window
 {
     private const double CollapsedSize = 72;
-    private const double ExpandedWidth = 296;
+    private const double ExpandedWidth = 324;
 
     private readonly SessionOrchestrator? _sessionOrchestrator;
     private bool _isExpanded = true;
+    private readonly DispatcherTimer _durationTimer;
+    private DateTimeOffset? _sessionStartedAt;
+
+    public event EventHandler? StopSessionRequested;
 
     public OverlayWindow(SessionOrchestrator? sessionOrchestrator = null)
     {
         InitializeComponent();
+        _durationTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background,
+            (_, _) => UpdateDuration(), Dispatcher);
         _sessionOrchestrator = sessionOrchestrator;
         if (_sessionOrchestrator is not null)
         {
@@ -25,11 +32,14 @@ public partial class OverlayWindow : Window
             _sessionOrchestrator.ScreenShareStateChanged += OnMediaStateChanged;
             _sessionOrchestrator.MicrophoneStateChanged += OnMediaStateChanged;
             _sessionOrchestrator.SpeakingStateChanged += OnSpeakingStateChanged;
+            _sessionOrchestrator.ConnectionStateChanged += OnConnectionStateChanged;
         }
 
         Closed += OnClosed;
         UpdateMediaState();
         UpdateSpeakingState();
+        UpdateConnectionState();
+        UpdateDurationState();
         UpdateVisualState();
     }
 
@@ -79,7 +89,25 @@ public partial class OverlayWindow : Window
         }
     }
 
-    private void OnSessionStateChanged(object? sender, EventArgs e) => DispatchMediaStateUpdate();
+    private void OnSessionStateChanged(object? sender, EventArgs e)
+    {
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            UpdateMediaState();
+            UpdateConnectionState();
+            UpdateDurationState();
+        });
+    }
+
+    private void OnConnectionStateChanged(object? sender, EventArgs e)
+    {
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            UpdateMediaState();
+            UpdateConnectionState();
+            UpdateSpeakingState();
+        });
+    }
 
     private void OnMediaStateChanged(object? sender, EventArgs e) => DispatchMediaStateUpdate();
 
@@ -95,7 +123,7 @@ public partial class OverlayWindow : Window
 
     private void UpdateMediaState()
     {
-        bool hasActiveSession = _sessionOrchestrator?.IsRunning == true;
+        bool hasActiveSession = _sessionOrchestrator?.IsRunning == true && _sessionOrchestrator.IsConnected;
         ScreenShareButton.IsEnabled = hasActiveSession;
         MicrophoneButton.IsEnabled = hasActiveSession;
         ScreenShareButton.IsChecked = hasActiveSession && _sessionOrchestrator!.IsScreenShareOn;
@@ -104,7 +132,7 @@ public partial class OverlayWindow : Window
 
     private void UpdateSpeakingState()
     {
-        bool isSpeaking = _sessionOrchestrator?.IsSpeaking == true;
+        bool isSpeaking = _sessionOrchestrator?.IsSpeaking == true && _sessionOrchestrator.IsConnected;
         Storyboard expandedPulse = (Storyboard)FindResource("ExpandedSpeakingPulse");
         Storyboard collapsedPulse = (Storyboard)FindResource("CollapsedSpeakingPulse");
 
@@ -119,6 +147,55 @@ public partial class OverlayWindow : Window
         collapsedPulse.Remove(this);
     }
 
+    private void UpdateConnectionState()
+    {
+        bool isBuffering = _sessionOrchestrator?.IsConnecting == true ||
+            (_sessionOrchestrator?.IsRunning == true && !_sessionOrchestrator.IsConnected);
+        ExpandedReadyIcon.Visibility = isBuffering ? Visibility.Collapsed : Visibility.Visible;
+        CollapsedReadyIcon.Visibility = isBuffering ? Visibility.Collapsed : Visibility.Visible;
+        ExpandedBufferingIcon.Visibility = isBuffering ? Visibility.Visible : Visibility.Collapsed;
+        CollapsedBufferingIcon.Visibility = isBuffering ? Visibility.Visible : Visibility.Collapsed;
+        Storyboard buffering = (Storyboard)FindResource("BufferingRotation");
+        if (isBuffering)
+        {
+            buffering.Begin(this, true);
+            CollapsedBufferingRotate.BeginAnimation(RotateTransform.AngleProperty,
+                new DoubleAnimation(0, 360, TimeSpan.FromMilliseconds(900))
+                {
+                    RepeatBehavior = RepeatBehavior.Forever
+                });
+        }
+        else
+        {
+            buffering.Remove(this);
+            CollapsedBufferingRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+        }
+    }
+
+    private void UpdateDurationState()
+    {
+        if (_sessionOrchestrator?.IsRunning == true)
+        {
+            _sessionStartedAt ??= DateTimeOffset.UtcNow;
+            _durationTimer.Start();
+        }
+        else
+        {
+            _durationTimer.Stop();
+            _sessionStartedAt = null;
+        }
+
+        UpdateDuration();
+    }
+
+    private void UpdateDuration()
+    {
+        TimeSpan elapsed = _sessionStartedAt is null ? TimeSpan.Zero : DateTimeOffset.UtcNow - _sessionStartedAt.Value;
+        SessionDurationText.Text = elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
+            : $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+
     private void OnClosed(object? sender, EventArgs e)
     {
         if (_sessionOrchestrator is null)
@@ -130,6 +207,8 @@ public partial class OverlayWindow : Window
         _sessionOrchestrator.ScreenShareStateChanged -= OnMediaStateChanged;
         _sessionOrchestrator.MicrophoneStateChanged -= OnMediaStateChanged;
         _sessionOrchestrator.SpeakingStateChanged -= OnSpeakingStateChanged;
+        _sessionOrchestrator.ConnectionStateChanged -= OnConnectionStateChanged;
+        _durationTimer.Stop();
     }
 
     private void OnCollapsedMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -196,15 +275,24 @@ public partial class OverlayWindow : Window
         UpdateVisualState();
     }
 
-    private void OnCloseClick(object sender, RoutedEventArgs e)
+    public bool ConfirmStopSession()
     {
         CloseSessionDialog dialog = new()
         {
             Owner = this
         };
 
-        if (dialog.ShowDialog() == true)
+        return dialog.ShowDialog() == true;
+    }
+
+    private void OnCloseClick(object sender, RoutedEventArgs e)
+    {
+        if (ConfirmStopSession())
         {
+            if (_sessionOrchestrator?.IsRunning == true)
+            {
+                StopSessionRequested?.Invoke(this, EventArgs.Empty);
+            }
             Close();
         }
     }

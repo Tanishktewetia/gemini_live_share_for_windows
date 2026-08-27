@@ -11,6 +11,7 @@ public partial class MainWindow : Window
     private readonly IApiKeyVaultService _apiKeyVault;
     private readonly ISensitiveContentFilterSettings _filterSettings;
     private readonly SessionOrchestrator _sessionOrchestrator;
+    private readonly MainViewModel _viewModel;
     private GlobalHotkey? _overlayHotkey;
     private HwndSource? _windowSource;
     private OverlayWindow? _overlayWindow;
@@ -23,6 +24,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DataContext = viewModel;
+        _viewModel = viewModel;
         _apiKeyVault = apiKeyVault;
         _filterSettings = filterSettings;
         _sessionOrchestrator = sessionOrchestrator;
@@ -65,22 +67,33 @@ public partial class MainWindow : Window
     {
         if (message == GlobalHotkey.WindowMessage && _overlayHotkey is not null && wParam.ToInt32() == _overlayHotkey.Id)
         {
-            ToggleOverlay();
+            HandleHotkey();
             handled = true;
         }
 
         return nint.Zero;
     }
 
-    private void ToggleOverlay()
+    private async void HandleHotkey()
     {
-        if (_overlayWindow is null || !_overlayWindow.IsVisible)
+        if (_viewModel.IsBusy)
         {
-            ShowOverlay();
             return;
         }
 
-        _overlayWindow.ToggleExpandedState();
+        ShowOverlay();
+        if (_sessionOrchestrator.IsRunning)
+        {
+            if (_overlayWindow?.ConfirmStopSession() != true)
+            {
+                return;
+            }
+        }
+
+        if (_viewModel.StartOrStopCommand.CanExecute(null))
+        {
+            await _viewModel.StartOrStopCommand.ExecuteAsync(null);
+        }
     }
 
     private void ShowOverlay()
@@ -88,6 +101,7 @@ public partial class MainWindow : Window
         if (_overlayWindow is null)
         {
             _overlayWindow = new OverlayWindow(_sessionOrchestrator);
+            _overlayWindow.StopSessionRequested += OnStopSessionRequested;
             _overlayWindow.Closed += OnOverlayClosed;
         }
 
@@ -102,7 +116,16 @@ public partial class MainWindow : Window
         if (_overlayWindow is not null)
         {
             _overlayWindow.Closed -= OnOverlayClosed;
+            _overlayWindow.StopSessionRequested -= OnStopSessionRequested;
             _overlayWindow = null;
+        }
+    }
+
+    private async void OnStopSessionRequested(object? sender, EventArgs e)
+    {
+        if (!_viewModel.IsBusy && _sessionOrchestrator.IsRunning && _viewModel.StartOrStopCommand.CanExecute(null))
+        {
+            await _viewModel.StartOrStopCommand.ExecuteAsync(null);
         }
     }
 

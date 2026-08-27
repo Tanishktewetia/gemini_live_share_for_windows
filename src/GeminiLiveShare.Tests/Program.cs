@@ -253,6 +253,8 @@ static async Task ValidateMediaPauseAndRestoreAsync()
         capture, new FakeAudioPlayback(), client, screen, new FakeImageProcessing(), new FakeChatHistory());
 
     await orchestrator.StartAsync("test-key");
+    Require(orchestrator.IsConnected && !orchestrator.IsConnecting,
+        "orchestrator did not expose the established connection state");
     Require(capture.IsCapturing && orchestrator.IsMicrophoneOn, "media did not start with the conversation");
     await WaitUntilAsync(() => screen.RunCount == 1, "screen capture did not start");
     Require(orchestrator.IsScreenShareOn, "screen-share state did not turn on with the conversation");
@@ -274,6 +276,7 @@ static async Task ValidateMediaPauseAndRestoreAsync()
     client.SetAvailable(false);
     await WaitUntilAsync(() => !capture.IsCapturing && !orchestrator.IsMicrophoneOn,
         "media did not pause when the connection was lost");
+    Require(!orchestrator.IsConnected, "orchestrator did not expose the unavailable connection state");
 
     client.SetAvailable(true);
     await WaitUntilAsync(() => capture.IsCapturing && orchestrator.IsMicrophoneOn &&
