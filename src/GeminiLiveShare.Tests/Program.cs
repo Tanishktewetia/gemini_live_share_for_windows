@@ -228,13 +228,29 @@ static async Task ValidateMediaPauseAndRestoreAsync()
     await orchestrator.StartAsync("test-key");
     Require(capture.IsCapturing && orchestrator.IsMicrophoneOn, "media did not start with the conversation");
     await WaitUntilAsync(() => screen.RunCount == 1, "screen capture did not start");
+    Require(orchestrator.IsScreenShareOn, "screen-share state did not turn on with the conversation");
+
+    await orchestrator.SetScreenShareEnabledAsync(false);
+    Require(!orchestrator.IsScreenShareOn && capture.IsCapturing,
+        "turning off screen share also stopped the microphone");
+    await orchestrator.SetScreenShareEnabledAsync(true);
+    await WaitUntilAsync(() => orchestrator.IsScreenShareOn && screen.RunCount == 2,
+        "screen capture did not restart after being toggled on");
+
+    await orchestrator.SetMicrophoneEnabledAsync(false);
+    Require(!capture.IsCapturing && !orchestrator.IsMicrophoneOn && orchestrator.IsScreenShareOn,
+        "turning off the microphone also stopped screen share");
+    await orchestrator.SetMicrophoneEnabledAsync(true);
+    Require(capture.IsCapturing && orchestrator.IsMicrophoneOn,
+        "microphone capture did not restart after being toggled on");
 
     client.SetAvailable(false);
     await WaitUntilAsync(() => !capture.IsCapturing && !orchestrator.IsMicrophoneOn,
         "media did not pause when the connection was lost");
 
     client.SetAvailable(true);
-    await WaitUntilAsync(() => capture.IsCapturing && orchestrator.IsMicrophoneOn && screen.RunCount == 2,
+    await WaitUntilAsync(() => capture.IsCapturing && orchestrator.IsMicrophoneOn &&
+        orchestrator.IsScreenShareOn && screen.RunCount == 3,
         "media did not resume after reconnection");
     await orchestrator.StopAsync();
 }

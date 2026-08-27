@@ -34,7 +34,7 @@ public partial class App : Application
             new ChatHistoryRepository());
 
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault);
-        MainWindow window = new(viewModel, apiKeyVault, filterSettings);
+        MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator);
         MainWindow = window;
         window.Show();
     }

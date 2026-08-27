@@ -1,0 +1,40 @@
+<Window x:Class="GeminiLiveShare.App.Views.CloseSessionDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Close session"
+        Width="360"
+        Height="190"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        MouseLeftButtonDown="OnWindowMouseLeftButtonDown"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None">
+    <Border Margin="12"
+            Padding="24"
+            Background="#F21B1B20"
+            BorderBrush="#35FFFFFF"
+            BorderThickness="1"
+            CornerRadius="18">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="24" Opacity="0.6" ShadowDepth="5" Color="#FF000000" />
+        </Border.Effect>
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <TextBlock FontSize="19" FontWeight="SemiBold" Foreground="White" Text="Close session?" />
+            <TextBlock Grid.Row="1" Margin="0,10,0,0" Foreground="#FFBFC1C9"
+                       Text="Are you sure you want to close this session?" TextWrapping="Wrap" />
+            <StackPanel Grid.Row="2" Margin="0,22,0,0" HorizontalAlignment="Right" Orientation="Horizontal">
+                <Button Width="88" Height="34" IsCancel="True" Content="Cancel" />
+                <Button Width="88" Height="34" Margin="10,0,0,0" Click="OnCloseSessionClick"
+                        Background="#FFC93F4A" BorderBrush="#FFFF6872" Foreground="White"
+                        FontWeight="SemiBold" Content="Close" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

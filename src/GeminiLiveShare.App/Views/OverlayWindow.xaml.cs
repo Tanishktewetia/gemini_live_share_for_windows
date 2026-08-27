@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using GeminiLiveShare.Core.Gemini;
 
 namespace GeminiLiveShare.App.Views;
 
@@ -10,12 +11,99 @@ public partial class OverlayWindow : Window
     private const double CollapsedSize = 72;
     private const double ExpandedWidth = 296;
 
+    private readonly SessionOrchestrator? _sessionOrchestrator;
     private bool _isExpanded = true;
 
-    public OverlayWindow()
+    public OverlayWindow(SessionOrchestrator? sessionOrchestrator = null)
     {
         InitializeComponent();
+        _sessionOrchestrator = sessionOrchestrator;
+        if (_sessionOrchestrator is not null)
+        {
+            _sessionOrchestrator.SessionStateChanged += OnSessionStateChanged;
+            _sessionOrchestrator.ScreenShareStateChanged += OnMediaStateChanged;
+            _sessionOrchestrator.MicrophoneStateChanged += OnMediaStateChanged;
+        }
+
+        Closed += OnClosed;
+        UpdateMediaState();
         UpdateVisualState();
+    }
+
+    private async void OnScreenShareClick(object sender, RoutedEventArgs e)
+    {
+        if (_sessionOrchestrator is null || !_sessionOrchestrator.IsRunning)
+        {
+            UpdateMediaState();
+            return;
+        }
+
+        ScreenShareButton.IsEnabled = false;
+        try
+        {
+            await _sessionOrchestrator.SetScreenShareEnabledAsync(!_sessionOrchestrator.IsScreenShareOn);
+        }
+        catch (Exception)
+        {
+            // The orchestrator reports capture failures through StatusChanged; keep the overlay usable.
+        }
+        finally
+        {
+            UpdateMediaState();
+        }
+    }
+
+    private async void OnMicrophoneClick(object sender, RoutedEventArgs e)
+    {
+        if (_sessionOrchestrator is null || !_sessionOrchestrator.IsRunning)
+        {
+            UpdateMediaState();
+            return;
+        }
+
+        MicrophoneButton.IsEnabled = false;
+        try
+        {
+            await _sessionOrchestrator.SetMicrophoneEnabledAsync(!_sessionOrchestrator.IsMicrophoneOn);
+        }
+        catch (Exception)
+        {
+            // The orchestrator reports capture failures through StatusChanged; keep the overlay usable.
+        }
+        finally
+        {
+            UpdateMediaState();
+        }
+    }
+
+    private void OnSessionStateChanged(object? sender, EventArgs e) => DispatchMediaStateUpdate();
+
+    private void OnMediaStateChanged(object? sender, EventArgs e) => DispatchMediaStateUpdate();
+
+    private void DispatchMediaStateUpdate()
+    {
+        _ = Dispatcher.InvokeAsync(UpdateMediaState);
+    }
+
+    private void UpdateMediaState()
+    {
+        bool hasActiveSession = _sessionOrchestrator?.IsRunning == true;
+        ScreenShareButton.IsEnabled = hasActiveSession;
+        MicrophoneButton.IsEnabled = hasActiveSession;
+        ScreenShareButton.IsChecked = hasActiveSession && _sessionOrchestrator!.IsScreenShareOn;
+        MicrophoneButton.IsChecked = hasActiveSession && _sessionOrchestrator!.IsMicrophoneOn;
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        if (_sessionOrchestrator is null)
+        {
+            return;
+        }
+
+        _sessionOrchestrator.SessionStateChanged -= OnSessionStateChanged;
+        _sessionOrchestrator.ScreenShareStateChanged -= OnMediaStateChanged;
+        _sessionOrchestrator.MicrophoneStateChanged -= OnMediaStateChanged;
     }
 
     private void OnCollapsedMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -78,15 +166,12 @@ public partial class OverlayWindow : Window
 
     private void OnCloseClick(object sender, RoutedEventArgs e)
     {
-        MessageBoxResult result = MessageBox.Show(
-            this,
-            "Are you sure you want to close this session?",
-            "Close session",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question,
-            MessageBoxResult.No);
+        CloseSessionDialog dialog = new()
+        {
+            Owner = this
+        };
 
-        if (result == MessageBoxResult.Yes)
+        if (dialog.ShowDialog() == true)
         {
             Close();
         }

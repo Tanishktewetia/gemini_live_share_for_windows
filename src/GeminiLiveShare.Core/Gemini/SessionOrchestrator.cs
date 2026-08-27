@@ -20,11 +20,13 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private CancellationTokenSource? _sessionCancellation;
     private CancellationTokenSource? _mediaCancellation;
+    private CancellationTokenSource? _videoCancellation;
     private Channel<byte[]>? _microphoneAudio;
     private Task? _microphoneSendTask;
     private Task? _videoTask;
     private string? _sessionId;
     private bool _microphoneDesired;
+    private bool _screenShareDesired;
 
     public SessionOrchestrator(
         IAudioCaptureService audioCapture,
@@ -53,9 +55,15 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     public event EventHandler? MicrophoneStateChanged;
 
+    public event EventHandler? ScreenShareStateChanged;
+
+    public event EventHandler? SessionStateChanged;
+
     public bool IsRunning { get; private set; }
 
     public bool IsMicrophoneOn { get; private set; }
+
+    public bool IsScreenShareOn { get; private set; }
 
     public async Task StartAsync(string apiKey, CancellationToken cancellationToken = default)
     {
@@ -74,16 +82,18 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 await _liveClient.ConnectAsync(apiKey, cancellationToken).ConfigureAwait(false);
                 _audioPlayback.Start();
                 _sessionCancellation = sessionCancellation;
-                IsRunning = true;
+                SetRunningState(true);
                 _microphoneDesired = true;
+                _screenShareDesired = true;
                 SetMicrophoneState(true);
                 StartMedia();
                 StatusChanged?.Invoke(this, "Conversation started");
             }
             catch
             {
-                IsRunning = false;
+                SetRunningState(false);
                 _microphoneDesired = false;
+                _screenShareDesired = false;
                 SetMicrophoneState(false);
                 _audioCapture.Stop();
                 sessionCancellation.Cancel();
@@ -112,8 +122,9 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 return;
             }
 
-            IsRunning = false;
+            SetRunningState(false);
             _microphoneDesired = false;
+            _screenShareDesired = false;
             SetMicrophoneState(false);
             _sessionCancellation?.Cancel();
             _audioCapture.Stop();
@@ -169,6 +180,37 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             await StopMicrophoneSenderAsync().ConfigureAwait(false);
             await _liveClient.SendAudioStreamEndAsync(cancellationToken).ConfigureAwait(false);
             StatusChanged?.Invoke(this, "Microphone OFF");
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
+    public async Task SetScreenShareEnabledAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!IsRunning)
+            {
+                return;
+            }
+
+            _screenShareDesired = enabled;
+            if (enabled)
+            {
+                if (!IsScreenShareOn && _liveClient.IsConnected && _mediaCancellation is not null)
+                {
+                    StartVideoSender(_mediaCancellation.Token);
+                    StatusChanged?.Invoke(this, "Screen share ON");
+                }
+
+                return;
+            }
+
+            await StopVideoSenderAsync().ConfigureAwait(false);
+            StatusChanged?.Invoke(this, "Screen share OFF");
         }
         finally
         {
@@ -308,7 +350,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             SetMicrophoneState(true);
             _audioCapture.Start();
         }
-        StartVideoSender(mediaToken);
+        if (_screenShareDesired)
+        {
+            StartVideoSender(mediaToken);
+        }
     }
 
     private async Task StopMediaAsync()
@@ -364,9 +409,13 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     private void StartVideoSender(CancellationToken cancellationToken)
     {
+        _videoCancellation?.Dispose();
+        _videoCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        CancellationToken videoToken = _videoCancellation.Token;
         // This task is intentionally independent from capture/audio sending. JPEG work never runs on
         // the audio callback and can neither await nor apply backpressure to the microphone channel.
-        _videoTask = Task.Run(() => RunVideoSenderAsync(cancellationToken), cancellationToken);
+        _videoTask = Task.Run(() => RunVideoSenderAsync(videoToken), videoToken);
+        SetScreenShareState(true);
     }
 
     private async Task RunVideoSenderAsync(CancellationToken cancellationToken)
@@ -381,6 +430,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         catch (Exception ex)
         {
             StatusChanged?.Invoke(this, $"Screen capture stopped: {ex.Message}");
+        }
+        finally
+        {
+            SetScreenShareState(false);
         }
     }
 
@@ -431,10 +484,14 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     private async Task StopVideoSenderAsync()
     {
+        _videoCancellation?.Cancel();
         Task? videoTask = _videoTask;
         _videoTask = null;
         if (videoTask is null)
         {
+            _videoCancellation?.Dispose();
+            _videoCancellation = null;
+            SetScreenShareState(false);
             return;
         }
 
@@ -445,6 +502,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         catch (OperationCanceledException)
         {
         }
+
+        _videoCancellation?.Dispose();
+        _videoCancellation = null;
+        SetScreenShareState(false);
     }
 
     private void SetMicrophoneState(bool isOn)
@@ -456,5 +517,27 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         IsMicrophoneOn = isOn;
         MicrophoneStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void SetScreenShareState(bool isOn)
+    {
+        if (IsScreenShareOn == isOn)
+        {
+            return;
+        }
+
+        IsScreenShareOn = isOn;
+        ScreenShareStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void SetRunningState(bool isRunning)
+    {
+        if (IsRunning == isRunning)
+        {
+            return;
+        }
+
+        IsRunning = isRunning;
+        SessionStateChanged?.Invoke(this, EventArgs.Empty);
     }
 }

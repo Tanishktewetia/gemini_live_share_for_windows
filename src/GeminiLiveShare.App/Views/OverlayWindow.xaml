@@ -66,7 +66,7 @@
             <Setter Property="Background" Value="#4D35383F" />
             <Setter Property="BorderBrush" Value="#38FFFFFF" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Foreground" Value="#FFFFFFFF" />
+            <Setter Property="Foreground" Value="#FFFF5555" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
@@ -75,8 +75,8 @@
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="20">
-                            <Viewbox Width="14"
-                                     Height="14"
+                            <Viewbox Width="18"
+                                     Height="18"
                                      HorizontalAlignment="Center"
                                      VerticalAlignment="Center">
                                 <TextBlock HorizontalAlignment="Center"
@@ -93,9 +93,9 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#66585B65" />
-                    <Setter Property="BorderBrush" Value="#66FFFFFF" />
-                    <Setter Property="Foreground" Value="White" />
+                    <Setter Property="Background" Value="#665B3034" />
+                    <Setter Property="BorderBrush" Value="#88FF6B6B" />
+                    <Setter Property="Foreground" Value="#FFFF7777" />
                 </Trigger>
                 <Trigger Property="IsPressed" Value="True">
                     <Setter Property="Background" Value="#8870747F" />
@@ -170,6 +170,11 @@
                                           Color="#FF637FEF" />
                     </Ellipse.Effect>
                 </Ellipse>
+                <TextBlock HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           FontSize="18"
+                           Foreground="White"
+                           Text="•••" />
             </Grid>
         </Border>
 
@@ -216,9 +221,10 @@
                     <ColumnDefinition Width="40" />
                 </Grid.ColumnDefinitions>
 
-                <ToggleButton Grid.Column="0" IsChecked="True"
+                <ToggleButton x:Name="ScreenShareButton" Grid.Column="0"
+                              Click="OnScreenShareClick"
                               Style="{StaticResource SideToggleStyle}"
-                              ToolTip="Toggle screen-share appearance">
+                              ToolTip="Toggle screen share">
                     <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
                                FontFamily="Segoe MDL2 Assets" FontSize="17"
                                Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
@@ -250,9 +256,10 @@
                                FontSize="20" Foreground="White" Text="•••" />
                 </Grid>
 
-                <ToggleButton Grid.Column="4" IsChecked="True"
+                <ToggleButton x:Name="MicrophoneButton" Grid.Column="4"
+                              Click="OnMicrophoneClick"
                               Style="{StaticResource SideToggleStyle}"
-                              ToolTip="Toggle microphone appearance">
+                              ToolTip="Toggle microphone">
                     <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
                                FontFamily="Segoe MDL2 Assets" FontSize="17"
                                Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
