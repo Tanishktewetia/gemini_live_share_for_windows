@@ -35,7 +35,7 @@ team/billing features. Local-first, single binary, single user.
 
 No backend server. No cloud DB. Everything lives on the user's machine.
 
-**PHASE 3B STATUS: Deferred.** Initial OCR-based backup credential detection attempt caused a regression (all blur protection stopped working) and was reverted. Phase 3a (UI Automation) remains the sole active credential protection layer. Plain-text credentials (e.g. passwords typed in Notepad) are NOT currently detected — this is a known gap. Revisit OCR integration in a future session with fresh diagnosis, ideally testing SoftwareBitmap buffer access in isolation before integrating into the main pipeline.
+**PHASE 3B STATUS: Integrated.** OCR-based backup credential detection now runs independently alongside Phase 3a on every protected frame, using the separately validated `SoftwareBitmap` OCR path. OCR failures and its 500 ms timeout are isolated to that pass and contribute zero rectangles without disabling UI Automation or the video pipeline. The persisted Sensitive Content Filtering setting controls both passes and defaults to enabled.
 
 ---
 
@@ -246,9 +246,8 @@ run and verify — don't let Claude Code jump ahead to later phases.
 - General visual polish, icons, theming.
 
 ### Phase 6 — Future Hardening
-1. OCR-based plain-text credential detection (reverted after a regression, needs isolated standalone testing before re-integration).
-2. Multi-window blur reliability (see the Phase 3a limitation above).
-3. Acoustic echo cancellation for speaker use (headphones work fine, speakers have echo).
+1. Multi-window blur reliability (see the Phase 3a limitation above).
+2. Acoustic echo cancellation for speaker use (headphones work fine, speakers have echo).
 
 ---
 

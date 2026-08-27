@@ -20,15 +20,19 @@ public partial class App : Application
         base.OnStartup(e);
 
         ApiKeyVaultService apiKeyVault = new();
+        SensitiveContentFilterSettings filterSettings = new();
         _sessionOrchestrator = new SessionOrchestrator(
             new AudioCaptureService(),
             new AudioPlaybackService(),
             new GeminiLiveClient(),
             new ScreenCaptureService(),
-            new ImageProcessingService(new CredentialBlurService()));
+            new ImageProcessingService(
+                new CredentialBlurService(),
+                new OcrCredentialDetector(),
+                filterSettings));
 
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault);
-        MainWindow window = new(viewModel, apiKeyVault);
+        MainWindow window = new(viewModel, apiKeyVault, filterSettings);
         MainWindow = window;
         window.Show();
     }

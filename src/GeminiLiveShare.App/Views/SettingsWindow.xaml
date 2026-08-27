@@ -2,12 +2,14 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Gemini Live Share Settings"
-        Height="250"
+        Height="360"
         Width="520"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner">
     <Grid Margin="24">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -20,12 +22,36 @@
                      Height="32"
                      Margin="0,10,0,0"
                      VerticalContentAlignment="Center" />
-        <TextBlock Grid.Row="2"
+        <CheckBox Grid.Row="2"
+                  Margin="0,18,0,0"
+                  FontWeight="SemiBold"
+                  Content="Sensitive Content Filtering"
+                  IsChecked="{Binding IsSensitiveContentFilteringEnabled, Mode=TwoWay}" />
+        <TextBlock Grid.Row="3"
+                   Margin="0,10,0,0"
+                   Padding="10"
+                   Background="#FFFFE3E3"
+                   Foreground="#FF8B0015"
+                   FontWeight="SemiBold"
+                   Text="Screen content will be sent WITHOUT any credential protection."
+                   TextWrapping="Wrap">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsSensitiveContentFilteringEnabled}" Value="False">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
+        <TextBlock Grid.Row="4"
                    Margin="0,10,0,0"
                    Foreground="DimGray"
                    Text="{Binding StatusMessage}"
                    TextWrapping="Wrap" />
-        <StackPanel Grid.Row="3"
+        <StackPanel Grid.Row="5"
                     Margin="0,18,0,0"
                     HorizontalAlignment="Right"
                     Orientation="Horizontal">
