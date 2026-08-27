@@ -15,6 +15,24 @@ public sealed class SetupConfiguration
 
     [JsonPropertyName("generationConfig")]
     public required AudioGenerationConfiguration GenerationConfig { get; init; }
+
+    [JsonPropertyName("inputAudioTranscription")]
+    public AudioTranscriptionConfiguration InputAudioTranscription { get; init; } = new();
+
+    [JsonPropertyName("outputAudioTranscription")]
+    public AudioTranscriptionConfiguration OutputAudioTranscription { get; init; } = new();
+
+    [JsonPropertyName("sessionResumption")]
+    public SessionResumptionConfiguration SessionResumption { get; init; } = new();
+}
+
+public sealed class AudioTranscriptionConfiguration;
+
+public sealed class SessionResumptionConfiguration
+{
+    [JsonPropertyName("handle")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Handle { get; init; }
 }
 
 public sealed class AudioGenerationConfiguration

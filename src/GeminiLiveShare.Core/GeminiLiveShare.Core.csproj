@@ -10,6 +10,7 @@
     <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.321" PrivateAssets="all" />
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="SkiaSharp" Version="3.119.1" />
+    <PackageReference Include="sqlite-net-pcl" Version="1.11.285" />
   </ItemGroup>
 
   <ItemGroup>

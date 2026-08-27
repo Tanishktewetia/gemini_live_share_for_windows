@@ -4,6 +4,7 @@ using GeminiLiveShare.App.Views;
 using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Security;
+using GeminiLiveShare.Core.Storage;
 using GeminiLiveShare.Core.Vision;
 
 namespace GeminiLiveShare.App;
@@ -29,7 +30,8 @@ public partial class App : Application
             new ImageProcessingService(
                 new CredentialBlurService(),
                 new OcrCredentialDetector(),
-                filterSettings));
+                filterSettings),
+            new ChatHistoryRepository());
 
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault);
         MainWindow window = new(viewModel, apiKeyVault, filterSettings);

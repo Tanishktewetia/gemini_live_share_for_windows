@@ -1,4 +1,5 @@
 using GeminiLiveShare.Core.Audio;
+using GeminiLiveShare.Core.Storage;
 using GeminiLiveShare.Core.Vision;
 using Windows.Graphics.Imaging;
 using System.Threading.Channels;
@@ -15,28 +16,36 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private readonly IGeminiLiveClient _liveClient;
     private readonly IScreenCaptureService _screenCapture;
     private readonly IImageProcessingService _imageProcessing;
+    private readonly IChatHistoryRepository _chatHistory;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private CancellationTokenSource? _sessionCancellation;
+    private CancellationTokenSource? _mediaCancellation;
     private Channel<byte[]>? _microphoneAudio;
     private Task? _microphoneSendTask;
     private Task? _videoTask;
+    private string? _sessionId;
+    private bool _microphoneDesired;
 
     public SessionOrchestrator(
         IAudioCaptureService audioCapture,
         IAudioPlaybackService audioPlayback,
         IGeminiLiveClient liveClient,
         IScreenCaptureService screenCapture,
-        IImageProcessingService imageProcessing)
+        IImageProcessingService imageProcessing,
+        IChatHistoryRepository chatHistory)
     {
         _audioCapture = audioCapture;
         _audioPlayback = audioPlayback;
         _liveClient = liveClient;
         _screenCapture = screenCapture;
         _imageProcessing = imageProcessing;
+        _chatHistory = chatHistory;
         _audioCapture.AudioCaptured += OnAudioCaptured;
         _liveClient.AudioReceived += OnAudioReceived;
         _liveClient.Interrupted += OnInterrupted;
         _liveClient.StatusChanged += OnClientStatusChanged;
+        _liveClient.TranscriptionReceived += OnTranscriptionReceived;
+        _liveClient.ConnectionAvailabilityChanged += OnConnectionAvailabilityChanged;
         _audioCapture.CaptureFailed += OnCaptureFailed;
     }
 
@@ -61,27 +70,28 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             CancellationTokenSource sessionCancellation = new();
             try
             {
+                _sessionId = Guid.NewGuid().ToString("N");
                 await _liveClient.ConnectAsync(apiKey, cancellationToken).ConfigureAwait(false);
                 _audioPlayback.Start();
                 _sessionCancellation = sessionCancellation;
                 IsRunning = true;
+                _microphoneDesired = true;
                 SetMicrophoneState(true);
-                StartMicrophoneSender(sessionCancellation.Token);
-                _audioCapture.Start();
-                StartVideoSender(sessionCancellation.Token);
+                StartMedia();
                 StatusChanged?.Invoke(this, "Conversation started");
             }
             catch
             {
                 IsRunning = false;
+                _microphoneDesired = false;
                 SetMicrophoneState(false);
                 _audioCapture.Stop();
                 sessionCancellation.Cancel();
-                await StopMicrophoneSenderAsync().ConfigureAwait(false);
-                await StopVideoSenderAsync().ConfigureAwait(false);
+                await StopMediaAsync().ConfigureAwait(false);
                 _audioPlayback.Stop();
                 await _liveClient.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
                 _sessionCancellation = null;
+                _sessionId = null;
                 sessionCancellation.Dispose();
                 throw;
             }
@@ -103,16 +113,17 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             }
 
             IsRunning = false;
+            _microphoneDesired = false;
             SetMicrophoneState(false);
             _sessionCancellation?.Cancel();
             _audioCapture.Stop();
-            await StopMicrophoneSenderAsync().ConfigureAwait(false);
-            await StopVideoSenderAsync().ConfigureAwait(false);
+            await StopMediaAsync().ConfigureAwait(false);
             _audioPlayback.Clear();
             _audioPlayback.Stop();
             await _liveClient.DisconnectAsync(cancellationToken).ConfigureAwait(false);
             _sessionCancellation?.Dispose();
             _sessionCancellation = null;
+            _sessionId = null;
             StatusChanged?.Invoke(this, "Conversation stopped");
         }
         finally
@@ -133,8 +144,9 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
             if (enabled)
             {
-                CancellationToken sessionToken = _sessionCancellation?.Token ?? CancellationToken.None;
-                StartMicrophoneSender(sessionToken);
+                _microphoneDesired = true;
+                CancellationToken mediaToken = _mediaCancellation?.Token ?? CancellationToken.None;
+                StartMicrophoneSender(mediaToken);
                 SetMicrophoneState(true);
                 try
                 {
@@ -152,6 +164,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             }
 
             SetMicrophoneState(false);
+            _microphoneDesired = false;
             _audioCapture.Stop();
             await StopMicrophoneSenderAsync().ConfigureAwait(false);
             await _liveClient.SendAudioStreamEndAsync(cancellationToken).ConfigureAwait(false);
@@ -171,10 +184,13 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _liveClient.AudioReceived -= OnAudioReceived;
         _liveClient.Interrupted -= OnInterrupted;
         _liveClient.StatusChanged -= OnClientStatusChanged;
+        _liveClient.TranscriptionReceived -= OnTranscriptionReceived;
+        _liveClient.ConnectionAvailabilityChanged -= OnConnectionAvailabilityChanged;
         _audioCapture.Dispose();
         _audioPlayback.Dispose();
         await _screenCapture.DisposeAsync().ConfigureAwait(false);
         await _liveClient.DisposeAsync().ConfigureAwait(false);
+        await _chatHistory.DisposeAsync().ConfigureAwait(false);
         _lifecycleLock.Dispose();
     }
 
@@ -198,6 +214,68 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     private void OnClientStatusChanged(object? sender, string status) => StatusChanged?.Invoke(this, status);
 
+    private async void OnTranscriptionReceived(object? sender, TranscriptionEventArgs e)
+    {
+        string? sessionId = _sessionId;
+        if (sessionId is null || string.IsNullOrWhiteSpace(e.Text))
+        {
+            return;
+        }
+
+        try
+        {
+            await _chatHistory.AddAsync(new ChatMessage
+            {
+                SessionId = sessionId,
+                Role = e.Role,
+                Text = e.Text,
+                CreatedAtUtc = DateTime.UtcNow
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke(this, $"Unable to save chat transcript: {ex.Message}");
+        }
+    }
+
+    private async void OnConnectionAvailabilityChanged(object? sender, ConnectionAvailabilityChangedEventArgs e)
+    {
+        // The initial connection becomes available while StartAsync still owns the lifecycle lock.
+        // StartAsync starts media itself, so do not queue a duplicate start behind that lock.
+        if (!IsRunning)
+        {
+            return;
+        }
+
+        await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (!IsRunning)
+            {
+                return;
+            }
+
+            if (!e.IsAvailable)
+            {
+                _audioCapture.Stop();
+                SetMicrophoneState(false);
+                await StopMediaAsync().ConfigureAwait(false);
+                _audioPlayback.Clear();
+                return;
+            }
+
+            StartMedia();
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke(this, $"Unable to restore media after reconnect: {ex.Message}");
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
     private void OnCaptureFailed(object? sender, AudioCaptureFailedEventArgs e)
     {
         SetMicrophoneState(false);
@@ -216,6 +294,30 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         Channel<byte[]> microphoneAudio = Channel.CreateBounded<byte[]>(options);
         _microphoneAudio = microphoneAudio;
         _microphoneSendTask = SendMicrophoneAudioAsync(microphoneAudio.Reader, cancellationToken);
+    }
+
+    private void StartMedia()
+    {
+        _mediaCancellation?.Dispose();
+        _mediaCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            _sessionCancellation?.Token ?? CancellationToken.None);
+        CancellationToken mediaToken = _mediaCancellation.Token;
+        if (_microphoneDesired)
+        {
+            StartMicrophoneSender(mediaToken);
+            SetMicrophoneState(true);
+            _audioCapture.Start();
+        }
+        StartVideoSender(mediaToken);
+    }
+
+    private async Task StopMediaAsync()
+    {
+        _mediaCancellation?.Cancel();
+        await StopMicrophoneSenderAsync().ConfigureAwait(false);
+        await StopVideoSenderAsync().ConfigureAwait(false);
+        _mediaCancellation?.Dispose();
+        _mediaCancellation = null;
     }
 
     private async Task StopMicrophoneSenderAsync()

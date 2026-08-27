@@ -8,6 +8,10 @@ public interface IGeminiLiveClient : IAsyncDisposable
 
     event EventHandler<string>? StatusChanged;
 
+    event EventHandler<TranscriptionEventArgs>? TranscriptionReceived;
+
+    event EventHandler<ConnectionAvailabilityChangedEventArgs>? ConnectionAvailabilityChanged;
+
     bool IsConnected { get; }
 
     Task ConnectAsync(string apiKey, CancellationToken cancellationToken = default);
