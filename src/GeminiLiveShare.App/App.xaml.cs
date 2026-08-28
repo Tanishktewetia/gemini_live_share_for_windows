@@ -22,6 +22,7 @@ public partial class App : Application
 
         ApiKeyVaultService apiKeyVault = new();
         SensitiveContentFilterSettings filterSettings = new();
+        ChatHistoryRepository chatHistory = new();
         _sessionOrchestrator = new SessionOrchestrator(
             new AudioCaptureService(),
             new AudioPlaybackService(),
@@ -31,9 +32,9 @@ public partial class App : Application
                 new CredentialBlurService(),
                 new OcrCredentialDetector(),
                 filterSettings),
-            new ChatHistoryRepository());
+            chatHistory);
 
-        MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault);
+        MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory);
         MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator);
         MainWindow = window;
         window.Show();

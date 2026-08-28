@@ -234,6 +234,15 @@ static async Task ValidateChatHistoryAsync()
         Require(messages[0].Text == "first" && messages[1].Text == "second",
             "chat history was not returned in insertion order");
         Require(messages.All(message => message.Id > 0), "chat history IDs were not generated");
+        IReadOnlyList<ChatMessage> allMessages = await repository.GetAllAsync();
+        Require(allMessages.Count == 3 && allMessages[0].CreatedAtUtc >= allMessages[^1].CreatedAtUtc,
+            "chat history sessions were not returned newest first");
+
+        await repository.DeleteSessionAsync("session-a");
+        Require((await repository.GetBySessionAsync("session-a")).Count == 0,
+            "chat history session was not deleted");
+        Require((await repository.GetBySessionAsync("session-b")).Count == 1,
+            "deleting a session removed another session");
     }
     finally
     {
@@ -435,8 +444,12 @@ file sealed class FakeImageProcessing : IImageProcessingService
 
 file sealed class FakeChatHistory : IChatHistoryRepository
 {
+    public event EventHandler<ChatMessageAddedEventArgs>? MessageAdded { add { } remove { } }
     public Task AddAsync(ChatMessage message) => Task.CompletedTask;
     public Task<IReadOnlyList<ChatMessage>> GetBySessionAsync(string sessionId) =>
         Task.FromResult<IReadOnlyList<ChatMessage>>(Array.Empty<ChatMessage>());
+    public Task<IReadOnlyList<ChatMessage>> GetAllAsync() =>
+        Task.FromResult<IReadOnlyList<ChatMessage>>(Array.Empty<ChatMessage>());
+    public Task DeleteSessionAsync(string sessionId) => Task.CompletedTask;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

@@ -1,4 +1,7 @@
 ﻿using System.Windows;
+using System.Windows.Input;
+using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Interop;
 using GeminiLiveShare.App.ViewModels;
 using GeminiLiveShare.Core.Security;
@@ -28,6 +31,13 @@ public partial class MainWindow : Window
         _apiKeyVault = apiKeyVault;
         _filterSettings = filterSettings;
         _sessionOrchestrator = sessionOrchestrator;
+        viewModel.Messages.CollectionChanged += (_, _) =>
+        {
+            if (viewModel.Messages.Count > 0)
+            {
+                MessageList.ScrollIntoView(viewModel.Messages[^1]);
+            }
+        };
         viewModel.SettingsRequested += OnSettingsRequested;
         SourceInitialized += OnSourceInitialized;
         Closed += OnClosed;
@@ -42,8 +52,32 @@ public partial class MainWindow : Window
         settingsWindow.ShowDialog();
     }
 
-    // TEMP: manual test button for Phase 5a, remove after verification.
-    private void OnTestOverlayClick(object sender, RoutedEventArgs e) => ShowOverlay();
+    private void OnTitleBarMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ButtonState == MouseButtonState.Pressed && FindAncestor<Button>(e.OriginalSource as DependencyObject) is null)
+        {
+            DragMove();
+        }
+    }
+
+    private void OnMinimizeClick(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
+
+    private static T? FindAncestor<T>(DependencyObject? source) where T : DependencyObject
+    {
+        while (source is not null)
+        {
+            if (source is T match)
+            {
+                return match;
+            }
+
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return null;
+    }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {

@@ -7,6 +7,8 @@ public sealed class ChatHistoryRepository : IChatHistoryRepository
     private readonly SQLiteAsyncConnection _connection;
     private readonly Task _initialization;
 
+    public event EventHandler<ChatMessageAddedEventArgs>? MessageAdded;
+
     public ChatHistoryRepository(string? databasePath = null)
     {
         string path = databasePath ?? Path.Combine(
@@ -28,6 +30,7 @@ public sealed class ChatHistoryRepository : IChatHistoryRepository
         ArgumentNullException.ThrowIfNull(message);
         await _initialization.ConfigureAwait(false);
         await _connection.InsertAsync(message).ConfigureAwait(false);
+        MessageAdded?.Invoke(this, new ChatMessageAddedEventArgs(message));
     }
 
     public async Task<IReadOnlyList<ChatMessage>> GetBySessionAsync(string sessionId)
@@ -38,6 +41,24 @@ public sealed class ChatHistoryRepository : IChatHistoryRepository
             .Where(message => message.SessionId == sessionId)
             .OrderBy(message => message.Id)
             .ToListAsync().ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<ChatMessage>> GetAllAsync()
+    {
+        await _initialization.ConfigureAwait(false);
+        return await _connection.Table<ChatMessage>()
+            .OrderByDescending(message => message.CreatedAtUtc)
+            .ThenByDescending(message => message.Id)
+            .ToListAsync().ConfigureAwait(false);
+    }
+
+    public async Task DeleteSessionAsync(string sessionId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        await _initialization.ConfigureAwait(false);
+        await _connection.Table<ChatMessage>()
+            .Where(message => message.SessionId == sessionId)
+            .DeleteAsync().ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

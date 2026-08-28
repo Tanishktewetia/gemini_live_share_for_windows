@@ -3,90 +3,95 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Security;
+using GeminiLiveShare.Core.Storage;
 
 namespace GeminiLiveShare.App.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
-    private readonly SessionOrchestrator _sessionOrchestrator;
+    private readonly SessionOrchestrator _orchestrator;
     private readonly IApiKeyVaultService _apiKeyVault;
+    private readonly IChatHistoryRepository _history;
     private readonly SynchronizationContext _uiContext;
+    private int _loadVersion;
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(StartStopLabel))]
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(StartStopLabel))]
     private bool _isRunning;
+    [ObservableProperty] private bool _isBusy;
+    [ObservableProperty] private string _connectionStatus = "Disconnected";
+    [ObservableProperty] private bool _isMicrophoneOn;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(SessionHeader))]
+    private ChatSessionViewModel? _selectedSession;
+    [ObservableProperty] private bool _hasMessages;
 
-    [ObservableProperty]
-    private bool _isBusy;
-
-    [ObservableProperty]
-    private string _connectionStatus = "Disconnected";
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(MicrophoneLabel))]
-    private bool _isMicrophoneOn;
-
-    public MainViewModel(SessionOrchestrator sessionOrchestrator, IApiKeyVaultService apiKeyVault)
+    public MainViewModel(SessionOrchestrator orchestrator, IApiKeyVaultService apiKeyVault, IChatHistoryRepository history)
     {
-        _sessionOrchestrator = sessionOrchestrator;
+        _orchestrator = orchestrator;
         _apiKeyVault = apiKeyVault;
+        _history = history;
         _uiContext = SynchronizationContext.Current ?? new SynchronizationContext();
-        _sessionOrchestrator.StatusChanged += OnStatusChanged;
-        _sessionOrchestrator.MicrophoneStateChanged += OnMicrophoneStateChanged;
-        AddLog("Application ready. Save an API key in Settings, then start a conversation.");
+        _orchestrator.StatusChanged += OnStatusChanged;
+        _orchestrator.MicrophoneStateChanged += OnMicrophoneStateChanged;
+        _history.MessageAdded += OnMessageAdded;
+        _ = LoadSessionsAsync();
     }
 
-    public ObservableCollection<string> LogEntries { get; } = [];
-
-    public string StartStopLabel => IsRunning ? "Stop conversation" : "Start conversation";
-
-    public string MicrophoneLabel => IsMicrophoneOn ? "🎙 Microphone ON" : "🎙 Microphone OFF";
-
+    public ObservableCollection<ChatSessionViewModel> Sessions { get; } = [];
+    public ObservableCollection<ChatMessageViewModel> Messages { get; } = [];
+    public string StartStopLabel => IsRunning ? "Stop Conversation" : "Start Conversation";
+    public string SessionHeader => SelectedSession?.HeaderText ?? "No conversation selected";
     public event EventHandler? SettingsRequested;
 
     [RelayCommand(CanExecute = nameof(CanStartOrStop))]
     private async Task StartOrStopAsync()
     {
         IsBusy = true;
-        StartOrStopCommand.NotifyCanExecuteChanged();
+        NotifyCommands();
         try
         {
             if (IsRunning)
+                await StopAsync();
+            else
             {
-                await _sessionOrchestrator.StopAsync();
-                IsRunning = false;
-                IsMicrophoneOn = false;
-                ConnectionStatus = "Disconnected";
-                ToggleMicrophoneCommand.NotifyCanExecuteChanged();
-                return;
+                ClearSelection();
+                await StartAsync();
             }
-
-            string? apiKey = _apiKeyVault.GetApiKey();
-            if (string.IsNullOrWhiteSpace(apiKey))
-            {
-                AddLog("No API key is saved. Open Settings and save one first.");
-                SettingsRequested?.Invoke(this, EventArgs.Empty);
-                return;
-            }
-
-            await _sessionOrchestrator.StartAsync(apiKey);
-            IsRunning = true;
-            IsMicrophoneOn = _sessionOrchestrator.IsMicrophoneOn;
-            ConnectionStatus = "Connected";
-            ToggleMicrophoneCommand.NotifyCanExecuteChanged();
         }
         catch (Exception ex)
         {
             IsRunning = false;
             IsMicrophoneOn = false;
-            ConnectionStatus = "Disconnected";
-            AddLog($"Unable to start conversation: {ex.Message}");
+            ConnectionStatus = $"Unable to start conversation: {ex.Message}";
         }
         finally
         {
             IsBusy = false;
-            StartOrStopCommand.NotifyCanExecuteChanged();
-            ToggleMicrophoneCommand.NotifyCanExecuteChanged();
+            NotifyCommands();
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanStartOrStop))]
+    private async Task NewConversationAsync()
+    {
+        IsBusy = true;
+        NotifyCommands();
+        try
+        {
+            if (IsRunning)
+                await StopAsync();
+            ClearSelection();
+            await StartAsync();
+        }
+        catch (Exception ex)
+        {
+            IsRunning = false;
+            IsMicrophoneOn = false;
+            ConnectionStatus = $"Unable to start conversation: {ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+            NotifyCommands();
         }
     }
 
@@ -94,50 +99,147 @@ public partial class MainViewModel : ObservableObject
     private async Task ToggleMicrophoneAsync()
     {
         IsBusy = true;
-        StartOrStopCommand.NotifyCanExecuteChanged();
-        ToggleMicrophoneCommand.NotifyCanExecuteChanged();
+        NotifyCommands();
         try
         {
-            await _sessionOrchestrator.SetMicrophoneEnabledAsync(!IsMicrophoneOn);
-            IsMicrophoneOn = _sessionOrchestrator.IsMicrophoneOn;
+            await _orchestrator.SetMicrophoneEnabledAsync(!IsMicrophoneOn);
+            IsMicrophoneOn = _orchestrator.IsMicrophoneOn;
         }
         catch (Exception ex)
         {
-            IsMicrophoneOn = _sessionOrchestrator.IsMicrophoneOn;
-            AddLog($"Unable to change microphone state: {ex.Message}");
+            IsMicrophoneOn = _orchestrator.IsMicrophoneOn;
+            ConnectionStatus = $"Unable to change microphone state: {ex.Message}";
         }
         finally
         {
             IsBusy = false;
-            StartOrStopCommand.NotifyCanExecuteChanged();
-            ToggleMicrophoneCommand.NotifyCanExecuteChanged();
+            NotifyCommands();
         }
     }
 
+    [RelayCommand] private void OpenSettings() => SettingsRequested?.Invoke(this, EventArgs.Empty);
+    [RelayCommand] private void RequestDelete(ChatSessionViewModel session) => session.IsDeleteConfirmationOpen = true;
+    [RelayCommand] private void CancelDelete(ChatSessionViewModel session) => session.IsDeleteConfirmationOpen = false;
+
     [RelayCommand]
-    private void OpenSettings() => SettingsRequested?.Invoke(this, EventArgs.Empty);
+    private async Task ConfirmDeleteAsync(ChatSessionViewModel session)
+    {
+        session.IsDeleteConfirmationOpen = false;
+        await _history.DeleteSessionAsync(session.SessionId);
+        Sessions.Remove(session);
+        if (SelectedSession == session)
+            ClearSelection();
+    }
+
+    partial void OnSelectedSessionChanged(ChatSessionViewModel? value)
+    {
+        OnPropertyChanged(nameof(SessionHeader));
+        _ = LoadSelectedAsync(value);
+    }
+
+    private async Task LoadSessionsAsync()
+    {
+        IReadOnlyList<ChatMessage> all = await _history.GetAllAsync();
+        foreach (var group in all.GroupBy(message => message.SessionId)
+                     .OrderByDescending(group => group.Max(message => message.CreatedAtUtc)))
+        {
+            ChatMessage? firstUser = group.Where(message => message.Role.Equals("user", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(message => message.Id).FirstOrDefault();
+            Sessions.Add(new ChatSessionViewModel(group.Key,
+                ChatSessionViewModel.CreateSummary(firstUser?.Text ?? "New conversation"),
+                group.Max(message => message.CreatedAtUtc)));
+        }
+    }
+
+    private async Task LoadSelectedAsync(ChatSessionViewModel? session)
+    {
+        int version = Interlocked.Increment(ref _loadVersion);
+        if (session is null)
+        {
+            Messages.Clear();
+            HasMessages = false;
+            return;
+        }
+
+        IReadOnlyList<ChatMessage> messages = await _history.GetBySessionAsync(session.SessionId);
+        if (version != _loadVersion || SelectedSession != session)
+            return;
+        Messages.Clear();
+        foreach (ChatMessage message in messages)
+            Messages.Add(new ChatMessageViewModel(message));
+        HasMessages = Messages.Count > 0;
+    }
+
+    private async Task StartAsync()
+    {
+        string? key = _apiKeyVault.GetApiKey();
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            ConnectionStatus = "No API key is saved.";
+            SettingsRequested?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+        await _orchestrator.StartAsync(key);
+        IsRunning = true;
+        IsMicrophoneOn = _orchestrator.IsMicrophoneOn;
+        ConnectionStatus = "Connected";
+    }
+
+    private async Task StopAsync()
+    {
+        await _orchestrator.StopAsync();
+        IsRunning = false;
+        IsMicrophoneOn = false;
+        ConnectionStatus = "Disconnected";
+    }
+
+    private void ClearSelection()
+    {
+        SelectedSession = null;
+        Messages.Clear();
+        HasMessages = false;
+    }
 
     private bool CanStartOrStop() => !IsBusy;
-
     private bool CanToggleMicrophone() => IsRunning && !IsBusy;
-
-    private void OnStatusChanged(object? sender, string status)
+    private void NotifyCommands()
     {
-        _uiContext.Post(_ =>
-        {
-            ConnectionStatus = status;
-            AddLog(status);
-        }, null);
+        StartOrStopCommand.NotifyCanExecuteChanged();
+        NewConversationCommand.NotifyCanExecuteChanged();
+        ToggleMicrophoneCommand.NotifyCanExecuteChanged();
     }
 
-    private void OnMicrophoneStateChanged(object? sender, EventArgs e)
+    private void OnStatusChanged(object? sender, string status) => _uiContext.Post(_ => ConnectionStatus = status, null);
+    private void OnMicrophoneStateChanged(object? sender, EventArgs e) => _uiContext.Post(_ =>
     {
-        _uiContext.Post(_ =>
-        {
-            IsMicrophoneOn = _sessionOrchestrator.IsMicrophoneOn;
-            ToggleMicrophoneCommand.NotifyCanExecuteChanged();
-        }, null);
-    }
+        IsMicrophoneOn = _orchestrator.IsMicrophoneOn;
+        ToggleMicrophoneCommand.NotifyCanExecuteChanged();
+    }, null);
+    private void OnMessageAdded(object? sender, ChatMessageAddedEventArgs e) => _uiContext.Post(_ => AddLiveMessage(e.Message), null);
 
-    private void AddLog(string message) => LogEntries.Add($"{DateTime.Now:HH:mm:ss}  {message}");
+    private void AddLiveMessage(ChatMessage message)
+    {
+        ChatSessionViewModel? session = Sessions.FirstOrDefault(item => item.SessionId == message.SessionId);
+        if (session is null)
+        {
+            session = new ChatSessionViewModel(message.SessionId,
+                message.Role.Equals("user", StringComparison.OrdinalIgnoreCase)
+                    ? ChatSessionViewModel.CreateSummary(message.Text) : "New conversation",
+                message.CreatedAtUtc);
+            Sessions.Insert(0, session);
+        }
+        else
+        {
+            session.Update(message);
+            Sessions.Move(Sessions.IndexOf(session), 0);
+        }
+
+        if (IsRunning && SelectedSession?.SessionId != message.SessionId)
+            SelectedSession = session;
+        if (SelectedSession?.SessionId == message.SessionId && Messages.All(item => item.Id != message.Id))
+        {
+            Messages.Add(new ChatMessageViewModel(message));
+            HasMessages = true;
+        }
+    }
 }
