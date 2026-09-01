@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Interop;
 using GeminiLiveShare.App.ViewModels;
+using GeminiLiveShare.App.Tray;
 using GeminiLiveShare.Core.Security;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Interop;
@@ -16,11 +17,17 @@ public partial class MainWindow : Window
     private readonly SessionOrchestrator _sessionOrchestrator;
     private readonly OverlayAppearanceSettings _overlaySettings;
     private readonly MainViewModel _viewModel;
+    public SettingsViewModel SettingsViewModel { get; }
     private GlobalHotkey? _overlayHotkey;
     private HwndSource? _windowSource;
     private OverlayWindow? _overlayWindow;
     private bool _isSidebarCollapsed;
     private GlobalHotkeyConfiguration _registeredHotkey = GlobalHotkeyConfiguration.Default;
+    private GlobalHotkeyConfiguration _settingsHotkeyConfiguration = GlobalHotkeyConfiguration.Default;
+    private bool _isCapturingHotkey;
+    private bool _sidebarWasCollapsedBeforeSettings;
+    private readonly TrayIconManager _trayIconManager;
+    private bool _isExiting;
 
     public MainWindow(
         MainViewModel viewModel,
@@ -29,13 +36,21 @@ public partial class MainWindow : Window
         SessionOrchestrator sessionOrchestrator,
         OverlayAppearanceSettings overlaySettings)
     {
-        InitializeComponent();
-        DataContext = viewModel;
         _viewModel = viewModel;
         _apiKeyVault = apiKeyVault;
         _filterSettings = filterSettings;
         _sessionOrchestrator = sessionOrchestrator;
         _overlaySettings = overlaySettings;
+        SettingsViewModel = new SettingsViewModel(_apiKeyVault, _filterSettings, _overlaySettings);
+        _settingsHotkeyConfiguration = new GlobalHotkeySettings().Load();
+        InitializeComponent();
+        DataContext = viewModel;
+        UpdateThemeButtons();
+        UpdateHotkeyDisplay();
+        _trayIconManager = new TrayIconManager(
+            RestoreFromTray,
+            ToggleOverlayFromTray,
+            ExitApplication);
         viewModel.Messages.CollectionChanged += (_, _) =>
         {
             if (viewModel.Messages.Count > 0)
@@ -50,18 +65,26 @@ public partial class MainWindow : Window
 
     private void OnSettingsRequested(object? sender, EventArgs e)
     {
-        SettingsWindow settingsWindow = new(
-            new SettingsViewModel(_apiKeyVault, _filterSettings, _overlaySettings),
-            TryUpdateGlobalHotkey)
-        {
-            Owner = this
-        };
-        settingsWindow.ShowDialog();
+        _sidebarWasCollapsedBeforeSettings = _isSidebarCollapsed;
+        _isSidebarCollapsed = false;
+        SidebarColumn.Width = new GridLength(360);
+        HistoryPanel.Visibility = Visibility.Collapsed;
+        SettingsPanel.Visibility = Visibility.Visible;
+        SidebarToggleButton.ToolTip = "Collapse settings";
+    }
+
+    private void OnBackFromSettingsClick(object sender, RoutedEventArgs e)
+    {
+        SettingsPanel.Visibility = Visibility.Collapsed;
+        HistoryPanel.Visibility = Visibility.Visible;
+        _isSidebarCollapsed = _sidebarWasCollapsedBeforeSettings;
+        SidebarColumn.Width = _isSidebarCollapsed ? new GridLength(0) : new GridLength(280);
+        SidebarToggleButton.ToolTip = _isSidebarCollapsed ? "Show history" : "Collapse history";
     }
 
     private void OnTitleBarMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState == MouseButtonState.Pressed && FindAncestor<Button>(e.OriginalSource as DependencyObject) is null)
+        if (e.ButtonState == MouseButtonState.Pressed && FindAncestor<System.Windows.Controls.Button>(e.OriginalSource as DependencyObject) is null)
         {
             DragMove();
         }
@@ -78,6 +101,52 @@ public partial class MainWindow : Window
     }
 
     private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
+
+    private void OnWindowClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        Hide();
+    }
+
+    public void RestoreFromTray()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (!IsVisible)
+            {
+                Show();
+            }
+
+            WindowState = WindowState.Normal;
+            Activate();
+            Focus();
+        });
+    }
+
+    public void ToggleOverlayFromTray()
+    {
+        Dispatcher.BeginInvoke(new Action(HandleHotkey));
+    }
+
+    public void ExitApplication()
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_isExiting)
+            {
+                return;
+            }
+
+            _isExiting = true;
+            _trayIconManager.Dispose();
+            System.Windows.Application.Current.Shutdown();
+        }));
+    }
 
     private void UpdateMaximizeGlyph()
     {
@@ -116,6 +185,173 @@ public partial class MainWindow : Window
         {
             await _viewModel.RenameSessionAsync(session, dialog.EnteredTitle);
         }
+    }
+
+    private void OnUpdateKeyClick(object sender, RoutedEventArgs e)
+    {
+        ApiKeyEditor.Visibility = ApiKeyEditor.Visibility == Visibility.Visible
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        if (ApiKeyEditor.Visibility == Visibility.Visible)
+        {
+            ApiKeyInput.Clear();
+            ApiKeyInput.Focus();
+        }
+    }
+
+    private void OnSaveKeyClick(object sender, RoutedEventArgs e)
+    {
+        if (SettingsViewModel.Save(ApiKeyInput.Password))
+        {
+            ApiKeyInput.Clear();
+            ApiKeyEditor.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void OnCancelKeyClick(object sender, RoutedEventArgs e)
+    {
+        ApiKeyInput.Clear();
+        ApiKeyEditor.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnDeleteKeyClick(object sender, RoutedEventArgs e) => DeleteConfirmationPopup.IsOpen = true;
+
+    private void OnCancelDeleteClick(object sender, RoutedEventArgs e) => DeleteConfirmationPopup.IsOpen = false;
+
+    private void OnConfirmDeleteClick(object sender, RoutedEventArgs e)
+    {
+        DeleteConfirmationPopup.IsOpen = false;
+        SettingsViewModel.DeleteApiKey();
+    }
+
+    private void OnLightThemeClick(object sender, RoutedEventArgs e)
+    {
+        SettingsViewModel.IsOverlayDark = false;
+        _overlayWindow?.ApplyCurrentTheme();
+        UpdateThemeButtons();
+    }
+
+    private void OnDarkThemeClick(object sender, RoutedEventArgs e)
+    {
+        SettingsViewModel.IsOverlayDark = true;
+        _overlayWindow?.ApplyCurrentTheme();
+        UpdateThemeButtons();
+    }
+
+    private void UpdateThemeButtons()
+    {
+        LightThemeButton.IsChecked = !SettingsViewModel.IsOverlayDark;
+        DarkThemeButton.IsChecked = SettingsViewModel.IsOverlayDark;
+    }
+
+    private void OnResetPositionClick(object sender, RoutedEventArgs e)
+    {
+        SettingsViewModel.ResetOverlayPosition();
+        SettingsViewModel.StatusMessage = "Overlay position reset to top center.";
+    }
+
+    private void OnChangeHotkeyClick(object sender, RoutedEventArgs e)
+    {
+        _isCapturingHotkey = true;
+        ChangeHotkeyButton.Content = "Press a key...";
+        HotkeyError.Text = string.Empty;
+        HotkeyError.Visibility = Visibility.Collapsed;
+        Keyboard.Focus(ChangeHotkeyButton);
+    }
+
+    private void OnPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (!_isCapturingHotkey)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key == Key.Escape)
+        {
+            CancelHotkeyCapture();
+            return;
+        }
+
+        if (IsModifierKey(key))
+        {
+            return;
+        }
+
+        HotkeyModifiers modifiers = GetHotkeyModifiers(Keyboard.Modifiers);
+        if ((modifiers & (HotkeyModifiers.Control | HotkeyModifiers.Alt | HotkeyModifiers.Shift)) == HotkeyModifiers.None)
+        {
+            ShowHotkeyError("Please include Ctrl, Alt, or Shift");
+            return;
+        }
+
+        int virtualKey = KeyInterop.VirtualKeyFromKey(key);
+        if (virtualKey == 0)
+        {
+            ShowHotkeyError("That key combination is not available");
+            return;
+        }
+
+        GlobalHotkeyConfiguration configuration = new(modifiers, (uint)virtualKey);
+        if (!TryUpdateGlobalHotkey(configuration))
+        {
+            ShowHotkeyError("Unable to register that key combination");
+            return;
+        }
+
+        try
+        {
+            new GlobalHotkeySettings().Save(configuration);
+            _settingsHotkeyConfiguration = configuration;
+            SettingsViewModel.StatusMessage = "Global hotkey updated.";
+            CancelHotkeyCapture();
+        }
+        catch (Exception ex)
+        {
+            ShowHotkeyError($"Could not save the hotkey: {ex.Message}");
+        }
+    }
+
+    private void CancelHotkeyCapture()
+    {
+        _isCapturingHotkey = false;
+        ChangeHotkeyButton.Content = "Change";
+        HotkeyError.Visibility = Visibility.Collapsed;
+        UpdateHotkeyDisplay();
+    }
+
+    private void ShowHotkeyError(string message)
+    {
+        HotkeyError.Text = message;
+        HotkeyError.Visibility = Visibility.Visible;
+    }
+
+    private void UpdateHotkeyDisplay()
+    {
+        List<string> parts = [];
+        if ((_settingsHotkeyConfiguration.Modifiers & HotkeyModifiers.Control) != 0) parts.Add("Ctrl");
+        if ((_settingsHotkeyConfiguration.Modifiers & HotkeyModifiers.Alt) != 0) parts.Add("Alt");
+        if ((_settingsHotkeyConfiguration.Modifiers & HotkeyModifiers.Shift) != 0) parts.Add("Shift");
+        if ((_settingsHotkeyConfiguration.Modifiers & HotkeyModifiers.Windows) != 0) parts.Add("Win");
+        parts.Add(GetKeyDisplayName(KeyInterop.KeyFromVirtualKey((int)_settingsHotkeyConfiguration.VirtualKey)));
+        HotkeyDisplay.Text = string.Join(" + ", parts);
+    }
+
+    private static string GetKeyDisplayName(Key key) => key is >= Key.D0 and <= Key.D9
+        ? ((int)key - (int)Key.D0).ToString()
+        : key.ToString();
+
+    private static bool IsModifierKey(Key key) => key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin;
+
+    private static HotkeyModifiers GetHotkeyModifiers(ModifierKeys modifiers)
+    {
+        HotkeyModifiers result = HotkeyModifiers.None;
+        if ((modifiers & ModifierKeys.Control) != 0) result |= HotkeyModifiers.Control;
+        if ((modifiers & ModifierKeys.Alt) != 0) result |= HotkeyModifiers.Alt;
+        if ((modifiers & ModifierKeys.Shift) != 0) result |= HotkeyModifiers.Shift;
+        if ((modifiers & ModifierKeys.Windows) != 0) result |= HotkeyModifiers.Windows;
+        return result;
     }
 
     private static T? FindAncestor<T>(DependencyObject? source) where T : DependencyObject
@@ -229,6 +465,7 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        _trayIconManager.Dispose();
         _overlayHotkey?.Dispose();
         _overlayHotkey = null;
         _windowSource?.RemoveHook(WindowMessageHook);

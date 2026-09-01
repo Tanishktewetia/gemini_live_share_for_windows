@@ -54,7 +54,13 @@ public partial class OverlayWindow : Window
         UpdateVisualState();
     }
 
-    public bool IsDarkTheme { get; }
+    public bool IsDarkTheme { get; private set; }
+
+    public void ApplyCurrentTheme()
+    {
+        IsDarkTheme = _appearanceSettings.Theme == OverlayTheme.Dark;
+        ApplyTheme();
+    }
 
     private void OnLoaded(object? sender, RoutedEventArgs e)
     {
@@ -81,17 +87,17 @@ public partial class OverlayWindow : Window
     private void ApplyTheme()
     {
         Resources["OverlaySurfaceBrush"] = new SolidColorBrush(
-            IsDarkTheme ? Color.FromRgb(0x1A, 0x1A, 0x1A) : Color.FromRgb(0xF4, 0xF4, 0xF6));
+            IsDarkTheme ? System.Windows.Media.Color.FromRgb(0x1A, 0x1A, 0x1A) : System.Windows.Media.Color.FromRgb(0xF4, 0xF4, 0xF6));
         Resources["OverlaySurfaceHoverBrush"] = new SolidColorBrush(
-            IsDarkTheme ? Color.FromRgb(0x10, 0x10, 0x12) : Color.FromRgb(0xE8, 0xE8, 0xEC));
+            IsDarkTheme ? System.Windows.Media.Color.FromRgb(0x10, 0x10, 0x12) : System.Windows.Media.Color.FromRgb(0xE8, 0xE8, 0xEC));
         Resources["OverlayBorderBrush"] = new SolidColorBrush(
-            IsDarkTheme ? Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x40, 0x00, 0x00, 0x00));
+            IsDarkTheme ? System.Windows.Media.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF) : System.Windows.Media.Color.FromArgb(0x40, 0x00, 0x00, 0x00));
         Resources["OverlayControlBrush"] = new SolidColorBrush(
-            IsDarkTheme ? Color.FromArgb(0x38, 0x10, 0x10, 0x12) : Color.FromArgb(0x70, 0xFF, 0xFF, 0xFF));
+            IsDarkTheme ? System.Windows.Media.Color.FromArgb(0x38, 0x10, 0x10, 0x12) : System.Windows.Media.Color.FromArgb(0x70, 0xFF, 0xFF, 0xFF));
         Resources["OverlayControlHoverBrush"] = new SolidColorBrush(
-            IsDarkTheme ? Color.FromArgb(0x66, 0x58, 0x5B, 0x65) : Color.FromArgb(0xA0, 0xFF, 0xFF, 0xFF));
+            IsDarkTheme ? System.Windows.Media.Color.FromArgb(0x66, 0x58, 0x5B, 0x65) : System.Windows.Media.Color.FromArgb(0xA0, 0xFF, 0xFF, 0xFF));
         Resources["OverlayMutedTextBrush"] = new SolidColorBrush(
-            IsDarkTheme ? Color.FromRgb(0xB8, 0xBB, 0xC4) : Color.FromRgb(0x45, 0x47, 0x50));
+            IsDarkTheme ? System.Windows.Media.Color.FromRgb(0xB8, 0xBB, 0xC4) : System.Windows.Media.Color.FromRgb(0x45, 0x47, 0x50));
     }
 
     private async void OnScreenShareClick(object sender, RoutedEventArgs e)
@@ -295,7 +301,7 @@ public partial class OverlayWindow : Window
 
     private void OnExpandedMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (FindAncestor<ButtonBase>(e.OriginalSource as DependencyObject) is not null)
+        if (FindAncestor<System.Windows.Controls.Primitives.ButtonBase>(e.OriginalSource as DependencyObject) is not null)
         {
             return;
         }
@@ -305,7 +311,7 @@ public partial class OverlayWindow : Window
 
     private void DragOrToggle()
     {
-        Point initialPosition = new(Left, Top);
+        System.Windows.Point initialPosition = new(Left, Top);
         DragWindow();
 
         if (AreClose(initialPosition.X, Left) && AreClose(initialPosition.Y, Top))

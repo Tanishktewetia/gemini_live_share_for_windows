@@ -14,7 +14,7 @@ public partial class CloseSessionDialog : Window
 
     private void OnWindowMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is null)
+        if (FindAncestor<System.Windows.Controls.Button>(e.OriginalSource as DependencyObject) is null)
         {
             DragMove();
         }
