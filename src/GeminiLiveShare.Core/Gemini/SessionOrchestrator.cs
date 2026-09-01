@@ -227,7 +227,24 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 return;
             }
 
+            // Publish the off state immediately. StopVideoSenderAsync still waits for the
+            // capture loop to unwind, but no new frame is allowed past this point.
+            SetScreenShareState(false);
             await StopVideoSenderAsync().ConfigureAwait(false);
+            if (_liveClient.IsConnected)
+            {
+                try
+                {
+                    await _liveClient.SendTextAsync(
+                        "Screen sharing is now disabled. Treat all earlier screen frames as unavailable. " +
+                        "If the user asks about anything visual, say exactly: I don't see your screen right now; " +
+                        "I'm not receiving any visuals.", cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    StatusChanged?.Invoke(this, $"Screen sharing is off, but its state update could not be sent: {ex.Message}");
+                }
+            }
             StatusChanged?.Invoke(this, "Screen share OFF");
         }
         finally
@@ -481,8 +498,13 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     private async Task ProcessAndSendVideoFrameAsync(SoftwareBitmap frame, CancellationToken cancellationToken)
     {
+        if (!_screenShareDesired)
+        {
+            return;
+        }
+
         string? base64Jpeg = await _imageProcessing.EncodeForGeminiAsync(frame, cancellationToken).ConfigureAwait(false);
-        if (base64Jpeg is null)
+        if (base64Jpeg is null || !_screenShareDesired)
         {
             return;
         }
@@ -492,6 +514,11 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         if (!await SaveSanitizedFrameAsync(base64Jpeg, cancellationToken).ConfigureAwait(false))
         {
             StatusChanged?.Invoke(this, $"Sanitized frame could not be saved to {SanitizedFrameDirectory}; frame dropped.");
+            return;
+        }
+
+        if (!_screenShareDesired)
+        {
             return;
         }
 

@@ -3,6 +3,7 @@ using GeminiLiveShare.App.ViewModels;
 using GeminiLiveShare.App.Views;
 using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.Gemini;
+using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
 using GeminiLiveShare.Core.Storage;
 using GeminiLiveShare.Core.Vision;
@@ -22,6 +23,7 @@ public partial class App : Application
 
         ApiKeyVaultService apiKeyVault = new();
         SensitiveContentFilterSettings filterSettings = new();
+        OverlayAppearanceSettings overlaySettings = new();
         ChatHistoryRepository chatHistory = new();
         _sessionOrchestrator = new SessionOrchestrator(
             new AudioCaptureService(),
@@ -35,7 +37,7 @@ public partial class App : Application
             chatHistory);
 
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory);
-        MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator);
+        MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings);
         MainWindow = window;
         window.Show();
     }
@@ -50,4 +52,3 @@ public partial class App : Application
         base.OnExit(e);
     }
 }
-

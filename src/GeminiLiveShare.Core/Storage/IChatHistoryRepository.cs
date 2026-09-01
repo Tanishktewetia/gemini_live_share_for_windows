@@ -10,6 +10,10 @@ public interface IChatHistoryRepository : IAsyncDisposable
 
     Task<IReadOnlyList<ChatMessage>> GetAllAsync();
 
+    Task<IReadOnlyList<ChatSessionMetadata>> GetSessionMetadataAsync();
+
+    Task SetSessionTitleAsync(string sessionId, string title, bool isUserEdited);
+
     Task DeleteSessionAsync(string sessionId);
 }
 

@@ -12,7 +12,9 @@ public partial class MainViewModel : ObservableObject
     private readonly SessionOrchestrator _orchestrator;
     private readonly IApiKeyVaultService _apiKeyVault;
     private readonly IChatHistoryRepository _history;
+    private readonly ITitleGenerationService _titleGeneration;
     private readonly SynchronizationContext _uiContext;
+    private readonly HashSet<string> _titleGenerationStarted = [];
     private int _loadVersion;
 
     [ObservableProperty, NotifyPropertyChangedFor(nameof(StartStopLabel))]
@@ -24,11 +26,16 @@ public partial class MainViewModel : ObservableObject
     private ChatSessionViewModel? _selectedSession;
     [ObservableProperty] private bool _hasMessages;
 
-    public MainViewModel(SessionOrchestrator orchestrator, IApiKeyVaultService apiKeyVault, IChatHistoryRepository history)
+    public MainViewModel(
+        SessionOrchestrator orchestrator,
+        IApiKeyVaultService apiKeyVault,
+        IChatHistoryRepository history,
+        ITitleGenerationService? titleGeneration = null)
     {
         _orchestrator = orchestrator;
         _apiKeyVault = apiKeyVault;
         _history = history;
+        _titleGeneration = titleGeneration ?? new GeminiTitleGenerationService();
         _uiContext = SynchronizationContext.Current ?? new SynchronizationContext();
         _orchestrator.StatusChanged += OnStatusChanged;
         _orchestrator.MicrophoneStateChanged += OnMicrophoneStateChanged;
@@ -121,6 +128,20 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand] private void RequestDelete(ChatSessionViewModel session) => session.IsDeleteConfirmationOpen = true;
     [RelayCommand] private void CancelDelete(ChatSessionViewModel session) => session.IsDeleteConfirmationOpen = false;
 
+    public async Task RenameSessionAsync(ChatSessionViewModel session, string title)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        string normalizedTitle = string.Join(' ', title.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedTitle))
+        {
+            return;
+        }
+
+        normalizedTitle = normalizedTitle[..Math.Min(normalizedTitle.Length, 80)];
+        session.SetTitle(normalizedTitle, true);
+        await _history.SetSessionTitleAsync(session.SessionId, normalizedTitle, true);
+    }
+
     [RelayCommand]
     private async Task ConfirmDeleteAsync(ChatSessionViewModel session)
     {
@@ -140,14 +161,19 @@ public partial class MainViewModel : ObservableObject
     private async Task LoadSessionsAsync()
     {
         IReadOnlyList<ChatMessage> all = await _history.GetAllAsync();
+        IReadOnlyList<ChatSessionMetadata> metadata = await _history.GetSessionMetadataAsync();
+        Dictionary<string, ChatSessionMetadata> metadataBySession = metadata
+            .ToDictionary(item => item.SessionId, StringComparer.Ordinal);
         foreach (var group in all.GroupBy(message => message.SessionId)
                      .OrderByDescending(group => group.Max(message => message.CreatedAtUtc)))
         {
             ChatMessage? firstUser = group.Where(message => message.Role.Equals("user", StringComparison.OrdinalIgnoreCase))
                 .OrderBy(message => message.Id).FirstOrDefault();
+            metadataBySession.TryGetValue(group.Key, out ChatSessionMetadata? sessionMetadata);
             Sessions.Add(new ChatSessionViewModel(group.Key,
-                ChatSessionViewModel.CreateSummary(firstUser?.Text ?? "New conversation"),
-                group.Max(message => message.CreatedAtUtc)));
+                sessionMetadata?.Title ?? ChatSessionViewModel.CreateSummary(firstUser?.Text ?? "New conversation"),
+                group.Max(message => message.CreatedAtUtc),
+                sessionMetadata?.IsTitleUserEdited == true));
         }
     }
 
@@ -240,6 +266,60 @@ public partial class MainViewModel : ObservableObject
         {
             Messages.Add(new ChatMessageViewModel(message));
             HasMessages = true;
+        }
+
+        if (message.Role.Equals("user", StringComparison.OrdinalIgnoreCase) &&
+            !session.IsTitleUserEdited && _titleGenerationStarted.Add(session.SessionId))
+        {
+            _ = GenerateTitleAsync(session, message.Text);
+        }
+    }
+
+    private async Task GenerateTitleAsync(ChatSessionViewModel session, string firstUserMessage)
+    {
+        try
+        {
+            string? apiKey = _apiKeyVault.GetApiKey();
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                return;
+            }
+
+            string? title = await _titleGeneration
+                .GenerateAsync(firstUserMessage, apiKey).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                return;
+            }
+
+            _uiContext.Post(_ => ApplyGeneratedTitle(session, title), null);
+        }
+        catch (Exception ex)
+        {
+            _uiContext.Post(_ => ConnectionStatus = $"Unable to generate conversation title: {ex.Message}", null);
+        }
+    }
+
+    private void ApplyGeneratedTitle(ChatSessionViewModel session, string title)
+    {
+        if (session.IsTitleUserEdited || !Sessions.Contains(session))
+        {
+            return;
+        }
+
+        session.SetTitle(title, false);
+        _ = PersistGeneratedTitleAsync(session, title);
+    }
+
+    private async Task PersistGeneratedTitleAsync(ChatSessionViewModel session, string title)
+    {
+        try
+        {
+            await _history.SetSessionTitleAsync(session.SessionId, title, false).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _uiContext.Post(_ => ConnectionStatus = $"Unable to save conversation title: {ex.Message}", null);
         }
     }
 }

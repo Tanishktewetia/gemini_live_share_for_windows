@@ -39,4 +39,17 @@ public sealed class ApiKeyVaultService : IApiKeyVaultService
 
         _vault.Add(new PasswordCredential(ResourceName, UserName, apiKey.Trim()));
     }
+
+    public void DeleteApiKey()
+    {
+        try
+        {
+            PasswordCredential existing = _vault.Retrieve(ResourceName, UserName);
+            _vault.Remove(existing);
+        }
+        catch
+        {
+            // Deleting an already absent key is intentionally idempotent.
+        }
+    }
 }

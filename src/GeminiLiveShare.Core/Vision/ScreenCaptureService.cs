@@ -88,6 +88,15 @@ public sealed class ScreenCaptureService : IScreenCaptureService
     private static GraphicsCaptureItem CreatePrimaryMonitorItem()
     {
         HMONITOR monitor = PInvoke.MonitorFromPoint(default, MONITOR_FROM_FLAGS.MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO monitorInfo = new()
+        {
+            cbSize = (uint)Marshal.SizeOf<MONITORINFO>()
+        };
+        if (!PInvoke.GetMonitorInfo(monitor, ref monitorInfo) || ((uint)monitorInfo.dwFlags & 1U) == 0)
+        {
+            throw new InvalidOperationException("The primary monitor could not be resolved for screen capture.");
+        }
+
         Guid itemGuid = new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
         GraphicsCaptureItemInterop interop = GraphicsCaptureItem.As<GraphicsCaptureItemInterop>();
         Marshal.ThrowExceptionForHR(interop.CreateForMonitor(monitor, in itemGuid, out nint itemPointer));

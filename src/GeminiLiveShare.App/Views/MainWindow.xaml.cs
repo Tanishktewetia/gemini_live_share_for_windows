@@ -14,16 +14,20 @@ public partial class MainWindow : Window
     private readonly IApiKeyVaultService _apiKeyVault;
     private readonly ISensitiveContentFilterSettings _filterSettings;
     private readonly SessionOrchestrator _sessionOrchestrator;
+    private readonly OverlayAppearanceSettings _overlaySettings;
     private readonly MainViewModel _viewModel;
     private GlobalHotkey? _overlayHotkey;
     private HwndSource? _windowSource;
     private OverlayWindow? _overlayWindow;
+    private bool _isSidebarCollapsed;
+    private GlobalHotkeyConfiguration _registeredHotkey = GlobalHotkeyConfiguration.Default;
 
     public MainWindow(
         MainViewModel viewModel,
         IApiKeyVaultService apiKeyVault,
         ISensitiveContentFilterSettings filterSettings,
-        SessionOrchestrator sessionOrchestrator)
+        SessionOrchestrator sessionOrchestrator,
+        OverlayAppearanceSettings overlaySettings)
     {
         InitializeComponent();
         DataContext = viewModel;
@@ -31,6 +35,7 @@ public partial class MainWindow : Window
         _apiKeyVault = apiKeyVault;
         _filterSettings = filterSettings;
         _sessionOrchestrator = sessionOrchestrator;
+        _overlaySettings = overlaySettings;
         viewModel.Messages.CollectionChanged += (_, _) =>
         {
             if (viewModel.Messages.Count > 0)
@@ -45,7 +50,9 @@ public partial class MainWindow : Window
 
     private void OnSettingsRequested(object? sender, EventArgs e)
     {
-        SettingsWindow settingsWindow = new(new SettingsViewModel(_apiKeyVault, _filterSettings))
+        SettingsWindow settingsWindow = new(
+            new SettingsViewModel(_apiKeyVault, _filterSettings, _overlaySettings),
+            TryUpdateGlobalHotkey)
         {
             Owner = this
         };
@@ -62,7 +69,54 @@ public partial class MainWindow : Window
 
     private void OnMinimizeClick(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 
+    private void OnMaximizeClick(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState == WindowState.Maximized
+            ? WindowState.Normal
+            : WindowState.Maximized;
+        UpdateMaximizeGlyph();
+    }
+
     private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
+
+    private void UpdateMaximizeGlyph()
+    {
+        MaximizeGlyph.Text = WindowState == WindowState.Maximized ? "\uE923" : "\uE922";
+        MaximizeButton.ToolTip = WindowState == WindowState.Maximized ? "Restore" : "Maximize";
+    }
+
+    private void OnSidebarToggleClick(object sender, RoutedEventArgs e)
+    {
+        _isSidebarCollapsed = !_isSidebarCollapsed;
+        SidebarColumn.Width = _isSidebarCollapsed ? new GridLength(0) : new GridLength(260);
+        SidebarToggleButton.ToolTip = _isSidebarCollapsed ? "Show history" : "Collapse history";
+    }
+
+    private async void OnStartNewConversationClick(object sender, RoutedEventArgs e)
+    {
+        ShowOverlay();
+        if (_viewModel.NewConversationCommand.CanExecute(null))
+        {
+            await _viewModel.NewConversationCommand.ExecuteAsync(null);
+        }
+    }
+
+    private async void OnRenameSessionClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: ChatSessionViewModel session })
+        {
+            return;
+        }
+
+        RenameSessionDialog dialog = new(session.Summary)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            await _viewModel.RenameSessionAsync(session, dialog.EnteredTitle);
+        }
+    }
 
     private static T? FindAncestor<T>(DependencyObject? source) where T : DependencyObject
     {
@@ -86,10 +140,10 @@ public partial class MainWindow : Window
         _windowSource?.AddHook(WindowMessageHook);
 
         GlobalHotkeyConfiguration configuration = new GlobalHotkeySettings().Load();
+        _registeredHotkey = configuration;
         try
         {
-            HotkeyModifiers modifiers = configuration.Modifiers | HotkeyModifiers.NoRepeat;
-            _overlayHotkey = new GlobalHotkey(windowHandle, 1, modifiers, configuration.VirtualKey);
+            _overlayHotkey = CreateGlobalHotkey(configuration);
         }
         catch (System.ComponentModel.Win32Exception)
         {
@@ -134,7 +188,8 @@ public partial class MainWindow : Window
     {
         if (_overlayWindow is null)
         {
-            _overlayWindow = new OverlayWindow(_sessionOrchestrator);
+            _overlayWindow = new OverlayWindow(_sessionOrchestrator, _overlaySettings);
+            _overlayWindow.StartSessionRequested += OnStartSessionRequested;
             _overlayWindow.StopSessionRequested += OnStopSessionRequested;
             _overlayWindow.Closed += OnOverlayClosed;
         }
@@ -150,8 +205,17 @@ public partial class MainWindow : Window
         if (_overlayWindow is not null)
         {
             _overlayWindow.Closed -= OnOverlayClosed;
+            _overlayWindow.StartSessionRequested -= OnStartSessionRequested;
             _overlayWindow.StopSessionRequested -= OnStopSessionRequested;
             _overlayWindow = null;
+        }
+    }
+
+    private async void OnStartSessionRequested(object? sender, EventArgs e)
+    {
+        if (!_viewModel.IsBusy && !_sessionOrchestrator.IsRunning && _viewModel.StartOrStopCommand.CanExecute(null))
+        {
+            await _viewModel.StartOrStopCommand.ExecuteAsync(null);
         }
     }
 
@@ -169,5 +233,37 @@ public partial class MainWindow : Window
         _overlayHotkey = null;
         _windowSource?.RemoveHook(WindowMessageHook);
         _windowSource = null;
+    }
+
+    private GlobalHotkey CreateGlobalHotkey(GlobalHotkeyConfiguration configuration) =>
+        new(new WindowInteropHelper(this).Handle, 1,
+            configuration.Modifiers | HotkeyModifiers.NoRepeat, configuration.VirtualKey);
+
+    private bool TryUpdateGlobalHotkey(GlobalHotkeyConfiguration configuration)
+    {
+        GlobalHotkeyConfiguration previousConfiguration = _registeredHotkey;
+        _overlayHotkey?.Dispose();
+        _overlayHotkey = null;
+
+        try
+        {
+            _overlayHotkey = CreateGlobalHotkey(configuration);
+            _registeredHotkey = configuration;
+            return true;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            try
+            {
+                _overlayHotkey = CreateGlobalHotkey(previousConfiguration);
+                _registeredHotkey = previousConfiguration;
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                _overlayHotkey = null;
+            }
+
+            return false;
+        }
     }
 }

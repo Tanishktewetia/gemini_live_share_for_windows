@@ -17,6 +17,10 @@ public sealed class RealtimeInput
     [JsonPropertyName("video")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VideoBlob? Video { get; init; }
+
+    [JsonPropertyName("text")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Text { get; init; }
 }
 
 public sealed class AudioBlob
@@ -31,7 +35,7 @@ public sealed class AudioBlob
 public sealed class VideoBlob
 {
     [JsonPropertyName("mimeType")]
-    public string MimeType { get; init; } = "image/jpeg";
+    public string MimeType { get; init; } = "image/png";
 
     [JsonPropertyName("data")]
     public required string Data { get; init; }

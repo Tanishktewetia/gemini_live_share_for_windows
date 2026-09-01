@@ -20,6 +20,8 @@ public interface IGeminiLiveClient : IAsyncDisposable
 
     Task SendVideoFrameAsync(string base64Jpeg, CancellationToken cancellationToken = default);
 
+    Task SendTextAsync(string text, CancellationToken cancellationToken = default);
+
     Task SendAudioStreamEndAsync(CancellationToken cancellationToken = default);
 
     Task DisconnectAsync(CancellationToken cancellationToken = default);

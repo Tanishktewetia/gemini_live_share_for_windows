@@ -97,7 +97,11 @@ static async Task ValidateSanitizationBeforeEncodingAsync()
     string? encoded = await service.EncodeForGeminiAsync(frame, CancellationToken.None);
     Require(encoded is not null, "sanitized frame was unexpectedly dropped");
 
-    using SKBitmap decoded = SKBitmap.Decode(Convert.FromBase64String(encoded!));
+    byte[] encodedBytes = Convert.FromBase64String(encoded!);
+    Require(encodedBytes.Length >= 8 && encodedBytes[..8].SequenceEqual(
+        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }),
+        "screen frame was not encoded as lossless PNG");
+    using SKBitmap decoded = SKBitmap.Decode(encodedBytes);
     SKColor protectedPixel = decoded.GetPixel(50, 30);
     SKColor unprotectedPixel = decoded.GetPixel(5, 5);
     Require(protectedPixel.Red < 20 && protectedPixel.Green < 20 && protectedPixel.Blue < 20,
@@ -134,8 +138,27 @@ static void ValidateLiveProtocol()
         "input transcription was not enabled in setup");
     Require(setup.GetProperty("outputAudioTranscription").ValueKind == JsonValueKind.Object,
         "output transcription was not enabled in setup");
+    Require(setup.GetProperty("generationConfig").GetProperty("mediaResolution").GetString() ==
+        "MEDIA_RESOLUTION_HIGH", "high media resolution was not enabled");
     Require(!setup.GetProperty("sessionResumption").TryGetProperty("handle", out _),
         "a fresh setup serialized a null resumption handle");
+
+    SetupMessage visionSetup = new()
+    {
+        Setup = new SetupConfiguration
+        {
+            Model = "models/test",
+            GenerationConfig = new AudioGenerationConfiguration(),
+            SystemInstruction = new InstructionContent
+            {
+                Parts = [new InstructionPart { Text = "inspect the newest desktop screenshot" }]
+            }
+        }
+    };
+    using JsonDocument visionJson = JsonDocument.Parse(JsonSerializer.Serialize(visionSetup));
+    Require(visionJson.RootElement.GetProperty("setup").GetProperty("systemInstruction")
+        .GetProperty("parts")[0].GetProperty("text").GetString() ==
+        "inspect the newest desktop screenshot", "desktop vision instruction was not serialized");
 
     SetupMessage resumedSetup = new()
     {
@@ -238,6 +261,12 @@ static async Task ValidateChatHistoryAsync()
         Require(allMessages.Count == 3 && allMessages[0].CreatedAtUtc >= allMessages[^1].CreatedAtUtc,
             "chat history sessions were not returned newest first");
 
+        await repository.SetSessionTitleAsync("session-a", "Visual debugging", true);
+        ChatSessionMetadata sessionMetadata = (await repository.GetSessionMetadataAsync())
+            .Single(metadata => metadata.SessionId == "session-a");
+        Require(sessionMetadata.Title == "Visual debugging" && sessionMetadata.IsTitleUserEdited,
+            "chat session title was not persisted");
+
         await repository.DeleteSessionAsync("session-a");
         Require((await repository.GetBySessionAsync("session-a")).Count == 0,
             "chat history session was not deleted");
@@ -271,6 +300,8 @@ static async Task ValidateMediaPauseAndRestoreAsync()
     await orchestrator.SetScreenShareEnabledAsync(false);
     Require(!orchestrator.IsScreenShareOn && capture.IsCapturing,
         "turning off screen share also stopped the microphone");
+    Require(client.TextInputs.Any(text => text.Contains("Screen sharing is now disabled", StringComparison.Ordinal)),
+        "screen-share-off state was not sent to Gemini");
     await orchestrator.SetScreenShareEnabledAsync(true);
     await WaitUntilAsync(() => orchestrator.IsScreenShareOn && screen.RunCount == 2,
         "screen capture did not restart after being toggled on");
@@ -392,6 +423,7 @@ file sealed class FakeLiveClient : IGeminiLiveClient
     public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived { add { } remove { } }
     public event EventHandler<ConnectionAvailabilityChangedEventArgs>? ConnectionAvailabilityChanged;
     public bool IsConnected { get; private set; }
+    public List<string> TextInputs { get; } = [];
 
     public Task ConnectAsync(string apiKey, CancellationToken cancellationToken = default)
     {
@@ -402,6 +434,11 @@ file sealed class FakeLiveClient : IGeminiLiveClient
 
     public Task SendAudioAsync(byte[] pcmAudio, CancellationToken cancellationToken = default) => Task.CompletedTask;
     public Task SendVideoFrameAsync(string base64Jpeg, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public Task SendTextAsync(string text, CancellationToken cancellationToken = default)
+    {
+        TextInputs.Add(text);
+        return Task.CompletedTask;
+    }
     public Task SendAudioStreamEndAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     public Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
@@ -450,6 +487,9 @@ file sealed class FakeChatHistory : IChatHistoryRepository
         Task.FromResult<IReadOnlyList<ChatMessage>>(Array.Empty<ChatMessage>());
     public Task<IReadOnlyList<ChatMessage>> GetAllAsync() =>
         Task.FromResult<IReadOnlyList<ChatMessage>>(Array.Empty<ChatMessage>());
+    public Task<IReadOnlyList<ChatSessionMetadata>> GetSessionMetadataAsync() =>
+        Task.FromResult<IReadOnlyList<ChatSessionMetadata>>(Array.Empty<ChatSessionMetadata>());
+    public Task SetSessionTitleAsync(string sessionId, string title, bool isUserEdited) => Task.CompletedTask;
     public Task DeleteSessionAsync(string sessionId) => Task.CompletedTask;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

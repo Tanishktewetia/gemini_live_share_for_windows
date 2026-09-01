@@ -12,6 +12,12 @@
         WindowStartupLocation="CenterScreen"
         WindowStyle="None">
     <Window.Resources>
+        <SolidColorBrush x:Key="OverlaySurfaceBrush" Color="#FF1A1A1A" />
+        <SolidColorBrush x:Key="OverlaySurfaceHoverBrush" Color="#FF101012" />
+        <SolidColorBrush x:Key="OverlayBorderBrush" Color="#26FFFFFF" />
+        <SolidColorBrush x:Key="OverlayControlBrush" Color="#38101012" />
+        <SolidColorBrush x:Key="OverlayControlHoverBrush" Color="#66585B65" />
+        <SolidColorBrush x:Key="OverlayMutedTextBrush" Color="#FFB8BBC4" />
         <Storyboard x:Key="BufferingRotation" RepeatBehavior="Forever">
             <DoubleAnimation Storyboard.TargetName="BufferingRotate"
                              Storyboard.TargetProperty="Angle"
@@ -21,8 +27,8 @@
             <Setter Property="Width" Value="40" />
             <Setter Property="Height" Value="40" />
             <Setter Property="Padding" Value="0" />
-            <Setter Property="Background" Value="#38101012" />
-            <Setter Property="BorderBrush" Value="#38FFFFFF" />
+            <Setter Property="Background" Value="{DynamicResource OverlayControlBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource OverlayBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Foreground" Value="#FFB8BBC4" />
             <Setter Property="Cursor" Value="Hand" />
@@ -57,8 +63,8 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#66585B65" />
-                    <Setter Property="BorderBrush" Value="#66FFFFFF" />
+                    <Setter Property="Background" Value="{DynamicResource OverlayControlHoverBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource OverlayBorderBrush}" />
                     <Setter Property="Foreground" Value="White" />
                 </Trigger>
             </Style.Triggers>
@@ -68,8 +74,8 @@
             <Setter Property="Width" Value="40" />
             <Setter Property="Height" Value="40" />
             <Setter Property="Padding" Value="0" />
-            <Setter Property="Background" Value="#4D35383F" />
-            <Setter Property="BorderBrush" Value="#38FFFFFF" />
+            <Setter Property="Background" Value="{DynamicResource OverlayControlBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource OverlayBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Foreground" Value="#FFFF5555" />
             <Setter Property="Cursor" Value="Hand" />
@@ -124,6 +130,32 @@
                              Storyboard.TargetProperty="ScaleY"
                              From="1" To="1.15" Duration="0:0:0.32" />
         </Storyboard>
+        <Storyboard x:Key="CollapsedSpeakingDots" RepeatBehavior="Forever" AutoReverse="True">
+            <DoubleAnimation Storyboard.TargetName="CollapsedDot1Scale"
+                             Storyboard.TargetProperty="ScaleY"
+                             From="1" To="1.65" Duration="0:0:0.28" />
+            <DoubleAnimation Storyboard.TargetName="CollapsedDot2Scale"
+                             Storyboard.TargetProperty="ScaleY"
+                             BeginTime="0:0:0.08"
+                             From="1" To="1.85" Duration="0:0:0.28" />
+            <DoubleAnimation Storyboard.TargetName="CollapsedDot3Scale"
+                             Storyboard.TargetProperty="ScaleY"
+                             BeginTime="0:0:0.16"
+                             From="1" To="1.5" Duration="0:0:0.28" />
+        </Storyboard>
+        <Storyboard x:Key="ExpandedSpeakingDots" RepeatBehavior="Forever" AutoReverse="True">
+            <DoubleAnimation Storyboard.TargetName="ExpandedDot1Scale"
+                             Storyboard.TargetProperty="ScaleY"
+                             From="1" To="1.65" Duration="0:0:0.28" />
+            <DoubleAnimation Storyboard.TargetName="ExpandedDot2Scale"
+                             Storyboard.TargetProperty="ScaleY"
+                             BeginTime="0:0:0.08"
+                             From="1" To="1.85" Duration="0:0:0.28" />
+            <DoubleAnimation Storyboard.TargetName="ExpandedDot3Scale"
+                             Storyboard.TargetProperty="ScaleY"
+                             BeginTime="0:0:0.16"
+                             From="1" To="1.5" Duration="0:0:0.28" />
+        </Storyboard>
     </Window.Resources>
 
     <Window.Triggers>
@@ -156,8 +188,8 @@
                 MouseLeftButtonDown="OnCollapsedMouseLeftButtonDown">
             <Border.Style>
                 <Style TargetType="Border">
-                    <Setter Property="Background" Value="#FF1A1A1A" />
-                    <Setter Property="BorderBrush" Value="#26FFFFFF" />
+                    <Setter Property="Background" Value="{DynamicResource OverlaySurfaceBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource OverlayBorderBrush}" />
                     <Setter Property="BorderThickness" Value="1" />
                     <Setter Property="Opacity" Value="0.80" />
                     <Setter Property="Effect">
@@ -168,7 +200,7 @@
                     </Setter>
                     <Style.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter Property="Background" Value="#FF101012" />
+                            <Setter Property="Background" Value="{DynamicResource OverlaySurfaceHoverBrush}" />
                             <Setter Property="Opacity" Value="0.92" />
                         </Trigger>
                     </Style.Triggers>
@@ -202,9 +234,26 @@
                             <RotateTransform x:Name="CollapsedBufferingRotate" />
                         </Ellipse.RenderTransform>
                     </Ellipse>
+                <StackPanel x:Name="CollapsedDots" HorizontalAlignment="Center" VerticalAlignment="Center" Orientation="Horizontal">
+                    <Ellipse Width="5" Height="5" Fill="White" RenderTransformOrigin="0.5,0.5">
+                        <Ellipse.RenderTransform>
+                            <ScaleTransform x:Name="CollapsedDot1Scale" />
+                        </Ellipse.RenderTransform>
+                    </Ellipse>
+                    <Ellipse Width="5" Height="5" Margin="4,0" Fill="White" RenderTransformOrigin="0.5,0.5">
+                        <Ellipse.RenderTransform>
+                            <ScaleTransform x:Name="CollapsedDot2Scale" />
+                        </Ellipse.RenderTransform>
+                    </Ellipse>
+                    <Ellipse Width="5" Height="5" Fill="White" RenderTransformOrigin="0.5,0.5">
+                        <Ellipse.RenderTransform>
+                            <ScaleTransform x:Name="CollapsedDot3Scale" />
+                        </Ellipse.RenderTransform>
+                    </Ellipse>
+                </StackPanel>
                 <TextBlock HorizontalAlignment="Center"
                            VerticalAlignment="Center"
-                           FontSize="18"
+                           FontSize="18" Visibility="Collapsed"
                            Foreground="White"
                            Text="•••" />
             </Grid>
@@ -220,8 +269,8 @@
                     CornerRadius="28">
                 <Border.Style>
                     <Style TargetType="Border">
-                        <Setter Property="Background" Value="#FF1A1A1A" />
-                        <Setter Property="BorderBrush" Value="#26FFFFFF" />
+                        <Setter Property="Background" Value="{DynamicResource OverlaySurfaceBrush}" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource OverlayBorderBrush}" />
                         <Setter Property="BorderThickness" Value="1" />
                         <Setter Property="Opacity" Value="0.80" />
                         <Setter Property="Effect">
@@ -232,7 +281,7 @@
                         </Setter>
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding IsMouseOver, ElementName=ExpandedShell}" Value="True">
-                                <Setter Property="Background" Value="#FF101012" />
+                                <Setter Property="Background" Value="{DynamicResource OverlaySurfaceHoverBrush}" />
                                 <Setter Property="Opacity" Value="0.92" />
                             </DataTrigger>
                         </Style.Triggers>
@@ -265,7 +314,7 @@
 
                 <TextBlock x:Name="SessionDurationText" Grid.Column="1"
                            HorizontalAlignment="Center" VerticalAlignment="Center"
-                           FontSize="10" Foreground="#FFB8BBC4" Text="00:00" />
+                            FontSize="10" Foreground="{DynamicResource OverlayMutedTextBrush}" Text="00:00" />
 
                 <Grid x:Name="ExpandedCenter" Grid.Column="2"
                       Width="76" Height="76" Cursor="Hand"
@@ -292,8 +341,23 @@
                                               Color="#FF637FEF" />
                         </Ellipse.Effect>
                     </Ellipse>
-                    <TextBlock x:Name="ExpandedReadyIcon" HorizontalAlignment="Center" VerticalAlignment="Center"
-                               FontSize="20" Foreground="White" Text="•••" />
+                    <StackPanel x:Name="ExpandedDots" HorizontalAlignment="Center" VerticalAlignment="Center" Orientation="Horizontal">
+                        <Ellipse Width="6" Height="6" Fill="White" RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <ScaleTransform x:Name="ExpandedDot1Scale" />
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
+                        <Ellipse Width="6" Height="6" Margin="5,0" Fill="White" RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <ScaleTransform x:Name="ExpandedDot2Scale" />
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
+                        <Ellipse Width="6" Height="6" Fill="White" RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <ScaleTransform x:Name="ExpandedDot3Scale" />
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
+                    </StackPanel>
                     <Ellipse x:Name="ExpandedBufferingIcon" Width="28" Height="28"
                              Stroke="#55FFFFFF" StrokeThickness="3" Visibility="Collapsed"
                              StrokeDashArray="1,2" RenderTransformOrigin="0.5,0.5">

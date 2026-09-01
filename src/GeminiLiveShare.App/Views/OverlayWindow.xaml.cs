@@ -1,10 +1,12 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using GeminiLiveShare.Core.Gemini;
+using GeminiLiveShare.Core.Interop;
 
 namespace GeminiLiveShare.App.Views;
 
@@ -14,15 +16,23 @@ public partial class OverlayWindow : Window
     private const double ExpandedWidth = 324;
 
     private readonly SessionOrchestrator? _sessionOrchestrator;
+    private readonly OverlayAppearanceSettings _appearanceSettings;
     private bool _isExpanded = true;
     private readonly DispatcherTimer _durationTimer;
     private DateTimeOffset? _sessionStartedAt;
 
     public event EventHandler? StopSessionRequested;
 
-    public OverlayWindow(SessionOrchestrator? sessionOrchestrator = null)
+    public event EventHandler? StartSessionRequested;
+
+    public OverlayWindow(
+        SessionOrchestrator? sessionOrchestrator = null,
+        OverlayAppearanceSettings? appearanceSettings = null)
     {
         InitializeComponent();
+        _appearanceSettings = appearanceSettings ?? new OverlayAppearanceSettings();
+        IsDarkTheme = _appearanceSettings.Theme == OverlayTheme.Dark;
+        ApplyTheme();
         _durationTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background,
             (_, _) => UpdateDuration(), Dispatcher);
         _sessionOrchestrator = sessionOrchestrator;
@@ -36,11 +46,52 @@ public partial class OverlayWindow : Window
         }
 
         Closed += OnClosed;
+        Loaded += OnLoaded;
         UpdateMediaState();
         UpdateSpeakingState();
         UpdateConnectionState();
         UpdateDurationState();
         UpdateVisualState();
+    }
+
+    public bool IsDarkTheme { get; }
+
+    private void OnLoaded(object? sender, RoutedEventArgs e)
+    {
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        Rect workArea = SystemParameters.WorkArea;
+        double left = (workArea.Left + workArea.Right - Width) / 2;
+        double top = workArea.Top + 24;
+        if (_appearanceSettings.Position == OverlayPosition.BottomCenter)
+        {
+            top = workArea.Bottom - Height - 24;
+        }
+        else if (_appearanceSettings.Position == OverlayPosition.Custom &&
+                 _appearanceSettings.CustomLeft is double customLeft &&
+                 _appearanceSettings.CustomTop is double customTop)
+        {
+            left = customLeft;
+            top = customTop;
+        }
+
+        Left = Math.Clamp(left, workArea.Left, Math.Max(workArea.Left, workArea.Right - Width));
+        Top = Math.Clamp(top, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - Height));
+    }
+
+    private void ApplyTheme()
+    {
+        Resources["OverlaySurfaceBrush"] = new SolidColorBrush(
+            IsDarkTheme ? Color.FromRgb(0x1A, 0x1A, 0x1A) : Color.FromRgb(0xF4, 0xF4, 0xF6));
+        Resources["OverlaySurfaceHoverBrush"] = new SolidColorBrush(
+            IsDarkTheme ? Color.FromRgb(0x10, 0x10, 0x12) : Color.FromRgb(0xE8, 0xE8, 0xEC));
+        Resources["OverlayBorderBrush"] = new SolidColorBrush(
+            IsDarkTheme ? Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x40, 0x00, 0x00, 0x00));
+        Resources["OverlayControlBrush"] = new SolidColorBrush(
+            IsDarkTheme ? Color.FromArgb(0x38, 0x10, 0x10, 0x12) : Color.FromArgb(0x70, 0xFF, 0xFF, 0xFF));
+        Resources["OverlayControlHoverBrush"] = new SolidColorBrush(
+            IsDarkTheme ? Color.FromArgb(0x66, 0x58, 0x5B, 0x65) : Color.FromArgb(0xA0, 0xFF, 0xFF, 0xFF));
+        Resources["OverlayMutedTextBrush"] = new SolidColorBrush(
+            IsDarkTheme ? Color.FromRgb(0xB8, 0xBB, 0xC4) : Color.FromRgb(0x45, 0x47, 0x50));
     }
 
     private async void OnScreenShareClick(object sender, RoutedEventArgs e)
@@ -135,23 +186,30 @@ public partial class OverlayWindow : Window
         bool isSpeaking = _sessionOrchestrator?.IsSpeaking == true && _sessionOrchestrator.IsConnected;
         Storyboard expandedPulse = (Storyboard)FindResource("ExpandedSpeakingPulse");
         Storyboard collapsedPulse = (Storyboard)FindResource("CollapsedSpeakingPulse");
+        Storyboard expandedDots = (Storyboard)FindResource("ExpandedSpeakingDots");
+        Storyboard collapsedDots = (Storyboard)FindResource("CollapsedSpeakingDots");
 
         if (isSpeaking)
         {
             expandedPulse.Begin(this, true);
             collapsedPulse.Begin(this, true);
+            expandedDots.Begin(this, true);
+            collapsedDots.Begin(this, true);
             return;
         }
 
         expandedPulse.Remove(this);
         collapsedPulse.Remove(this);
+        expandedDots.Remove(this);
+        collapsedDots.Remove(this);
     }
 
     private void UpdateConnectionState()
     {
         bool isBuffering = _sessionOrchestrator?.IsConnecting == true ||
             (_sessionOrchestrator?.IsRunning == true && !_sessionOrchestrator.IsConnected);
-        ExpandedReadyIcon.Visibility = isBuffering ? Visibility.Collapsed : Visibility.Visible;
+        ExpandedDots.Visibility = isBuffering ? Visibility.Collapsed : Visibility.Visible;
+        CollapsedDots.Visibility = isBuffering ? Visibility.Collapsed : Visibility.Visible;
         CollapsedReadyIcon.Visibility = isBuffering ? Visibility.Collapsed : Visibility.Visible;
         ExpandedBufferingIcon.Visibility = isBuffering ? Visibility.Visible : Visibility.Collapsed;
         CollapsedBufferingIcon.Visibility = isBuffering ? Visibility.Visible : Visibility.Collapsed;
@@ -214,18 +272,30 @@ public partial class OverlayWindow : Window
     private void OnCollapsedMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        if (_sessionOrchestrator?.IsRunning != true)
+        {
+            StartSessionRequested?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
         DragOrToggle();
     }
 
     private void OnExpandedCenterMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        if (_sessionOrchestrator?.IsRunning != true)
+        {
+            StartSessionRequested?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
         DragOrToggle();
     }
 
     private void OnExpandedMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null)
+        if (FindAncestor<ButtonBase>(e.OriginalSource as DependencyObject) is not null)
         {
             return;
         }
@@ -255,6 +325,7 @@ public partial class OverlayWindow : Window
         try
         {
             DragMove();
+            _appearanceSettings.SaveCurrentPosition(Left, Top);
         }
         catch (InvalidOperationException)
         {
@@ -272,6 +343,17 @@ public partial class OverlayWindow : Window
     public void ToggleExpandedState()
     {
         _isExpanded = !_isExpanded;
+        UpdateVisualState();
+    }
+
+    public void Expand()
+    {
+        if (_isExpanded)
+        {
+            return;
+        }
+
+        _isExpanded = true;
         UpdateVisualState();
     }
 

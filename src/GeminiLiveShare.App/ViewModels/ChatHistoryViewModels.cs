@@ -5,14 +5,21 @@ namespace GeminiLiveShare.App.ViewModels;
 
 public sealed partial class ChatSessionViewModel : ObservableObject
 {
-    public ChatSessionViewModel(string sessionId, string summary, DateTime latestMessageUtc)
+    public ChatSessionViewModel(
+        string sessionId,
+        string summary,
+        DateTime latestMessageUtc,
+        bool isTitleUserEdited = false)
     {
         SessionId = sessionId;
         _summary = summary;
         _latestMessageUtc = latestMessageUtc;
+        IsTitleUserEdited = isTitleUserEdited;
     }
 
     public string SessionId { get; }
+
+    public bool IsTitleUserEdited { get; private set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HeaderText))]
@@ -37,10 +44,17 @@ public sealed partial class ChatSessionViewModel : ObservableObject
             LatestMessageUtc = message.CreatedAtUtc;
         }
 
-        if (message.Role.Equals("user", StringComparison.OrdinalIgnoreCase) && Summary == "New conversation")
+        if (message.Role.Equals("user", StringComparison.OrdinalIgnoreCase) &&
+            !IsTitleUserEdited && Summary == "New conversation")
         {
             Summary = CreateSummary(message.Text);
         }
+    }
+
+    public void SetTitle(string title, bool isUserEdited)
+    {
+        Summary = title;
+        IsTitleUserEdited = isUserEdited;
     }
 
     public static string CreateSummary(string text)

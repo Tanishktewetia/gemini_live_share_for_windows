@@ -9,8 +9,10 @@ namespace GeminiLiveShare.Core.Vision;
 
 public sealed class ImageProcessingService : IImageProcessingService
 {
-    private const int TargetWidth = 1280;
-    private const int JpegQuality = 82;
+    // Keep the full monitor width for ordinary 1080p/1440p displays and only reduce
+    // very large captures. This is important because desktop labels and icon glyphs
+    // occupy very few pixels in a full-screen frame.
+    private const int TargetWidth = 2560;
     private static readonly TimeSpan FrameProcessingBudget = TimeSpan.FromMilliseconds(1000);
 
     private readonly ICredentialBlurService _credentialBlur;
@@ -83,24 +85,41 @@ public sealed class ImageProcessingService : IImageProcessingService
         }
 
         int outputWidth = Math.Min(TargetWidth, source.Width);
-        int outputHeight = Math.Max(1, (int)Math.Round(source.Height * (outputWidth / (double)source.Width)));
-        using SKBitmap? resized = source.Resize(
-            new SKImageInfo(outputWidth, outputHeight, SKColorType.Bgra8888, SKAlphaType.Opaque),
-            new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
-        if (resized is null)
+        SKBitmap? resized = null;
+        if (outputWidth != source.Width)
         {
-            throw new InvalidOperationException("Unable to resize the captured screen frame.");
+            int outputHeight = Math.Max(1, (int)Math.Round(source.Height * (outputWidth / (double)source.Width)));
+            resized = source.Resize(
+                new SKImageInfo(outputWidth, outputHeight, SKColorType.Bgra8888, SKAlphaType.Opaque),
+                new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
+            if (resized is null)
+            {
+                throw new InvalidOperationException("Unable to resize the captured screen frame.");
+            }
         }
 
-        using SKImage image = SKImage.FromBitmap(resized);
-        using SKData jpeg = image.Encode(SKEncodedImageFormat.Jpeg, JpegQuality);
+        SKBitmap output = resized ?? source;
+        byte[] encodedBytes;
+        try
+        {
+            using SKImage image = SKImage.FromBitmap(output);
+            // PNG is lossless and avoids ringing/block artifacts around small desktop
+            // labels and icon edges. Gemini receives this as image/png in VideoBlob.
+            using SKData encodedImage = image.Encode(SKEncodedImageFormat.Png, 100);
+            encodedBytes = encodedImage.ToArray();
+        }
+        finally
+        {
+            resized?.Dispose();
+        }
+
         if (processingTime.Elapsed > FrameProcessingBudget)
         {
             Trace.WriteLine($"Frame processing exceeded {FrameProcessingBudget.TotalMilliseconds:0} ms; dropping frame.");
             return null;
         }
 
-        return Convert.ToBase64String(jpeg.ToArray());
+        return Convert.ToBase64String(encodedBytes);
     }
 
     private async Task<IReadOnlyList<SKRect>?> DetectOcrBoundsAsync(
