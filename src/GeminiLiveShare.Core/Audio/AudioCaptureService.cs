@@ -26,8 +26,11 @@ public sealed class AudioCaptureService : IAudioCaptureService
         WaveInEvent waveIn = new()
         {
             WaveFormat = new WaveFormat(InputSampleRate, BitsPerSample, Channels),
-            BufferMilliseconds = 50,
-            NumberOfBuffers = 3
+            // Keep capture frames short so speech reaches Gemini without waiting for
+            // a large driver buffer to fill. Two buffers provide enough headroom for
+            // normal scheduling without adding a long queue in front of the network.
+            BufferMilliseconds = 20,
+            NumberOfBuffers = 2
         };
 
         waveIn.DataAvailable += OnDataAvailable;

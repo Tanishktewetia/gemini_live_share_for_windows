@@ -23,14 +23,17 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
 
             _buffer = new BufferedWaveProvider(new WaveFormat(OutputSampleRate, BitsPerSample, Channels))
             {
-                BufferDuration = TimeSpan.FromSeconds(30),
+                // Bound the amount of audio that can sit behind the speaker. If the
+                // network briefly outruns playback, BufferedWaveProvider discards the
+                // oldest samples instead of allowing conversational delay to grow.
+                BufferDuration = TimeSpan.FromSeconds(2),
                 DiscardOnBufferOverflow = true,
                 ReadFully = true
             };
 
             _waveOut = new WaveOutEvent
             {
-                DesiredLatency = 100,
+                DesiredLatency = 50,
                 NumberOfBuffers = 2
             };
             _waveOut.Init(_buffer);

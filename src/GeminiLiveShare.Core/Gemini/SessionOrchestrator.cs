@@ -8,7 +8,10 @@ namespace GeminiLiveShare.Core.Gemini;
 
 public sealed class SessionOrchestrator : IAsyncDisposable
 {
-    private const int MicrophoneQueueCapacity = 4;
+    // Two 20 ms frames cap stale microphone audio at roughly 40 ms when a video
+    // frame briefly occupies the WebSocket send lock. Fresh speech is preferable
+    // to replaying old speech after a transient transport delay.
+    private const int MicrophoneQueueCapacity = 2;
     private static readonly TimeSpan SpeakingSilenceThreshold = TimeSpan.FromMilliseconds(350);
     private const string SanitizedFrameDirectory = @"C:\Temp\gemini-frames";
 
@@ -390,7 +393,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         {
             SingleReader = true,
             SingleWriter = true,
-            FullMode = BoundedChannelFullMode.Wait
+            FullMode = BoundedChannelFullMode.DropOldest
         };
         Channel<byte[]> microphoneAudio = Channel.CreateBounded<byte[]>(options);
         _microphoneAudio = microphoneAudio;
