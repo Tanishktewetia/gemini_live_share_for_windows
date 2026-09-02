@@ -1,0 +1,9 @@
+{
+  "name": "com.geminiliveshare.proxy",
+  "description": "GeminiLiveShare Phase 6a native messaging echo proxy.",
+  "path": "C:\\Users\\tanis\\Desktop\\gemini_live\\src\\GeminiLiveShare.NativeMessagingProxy\\bin\\Debug\\net8.0\\GeminiLiveShare.NativeMessagingProxy.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}

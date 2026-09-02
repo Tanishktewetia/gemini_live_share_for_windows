@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "GeminiLiveShare Browser Agent",
+  "version": "0.1.0",
+  "description": "Phase 6a native messaging connection test for GeminiLiveShare.",
+  "permissions": [
+    "nativeMessaging",
+    "activeTab",
+    "scripting"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_title": "Connect GeminiLiveShare"
+  }
+}
