@@ -11,6 +11,7 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
     private readonly object _syncRoot = new();
     private BufferedWaveProvider? _buffer;
     private WaveOutEvent? _waveOut;
+    private byte? _pendingSampleByte;
 
     public void Start()
     {
@@ -47,7 +48,31 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
 
         lock (_syncRoot)
         {
-            _buffer?.AddSamples(pcmAudio, 0, pcmAudio.Length);
+            if (_buffer is null || pcmAudio.Length == 0)
+            {
+                return;
+            }
+
+            int offset = 0;
+            if (_pendingSampleByte.HasValue)
+            {
+                byte[] firstSample = [_pendingSampleByte.Value, pcmAudio[0]];
+                _buffer.AddSamples(firstSample, 0, firstSample.Length);
+                _pendingSampleByte = null;
+                offset = 1;
+            }
+
+            int remaining = pcmAudio.Length - offset;
+            if ((remaining & 1) != 0)
+            {
+                _pendingSampleByte = pcmAudio[^1];
+                remaining--;
+            }
+
+            if (remaining > 0)
+            {
+                _buffer.AddSamples(pcmAudio, offset, remaining);
+            }
         }
     }
 
@@ -56,6 +81,7 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
         lock (_syncRoot)
         {
             _buffer?.ClearBuffer();
+            _pendingSampleByte = null;
         }
     }
 
@@ -67,6 +93,7 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
             _waveOut?.Dispose();
             _waveOut = null;
             _buffer = null;
+            _pendingSampleByte = null;
         }
     }
 
