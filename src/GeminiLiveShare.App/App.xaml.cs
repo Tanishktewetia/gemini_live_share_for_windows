@@ -41,7 +41,7 @@ public partial class App : System.Windows.Application
         _browserAgentBridge = new BrowserAgentBridge();
         _browserAgentBridge.Start();
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory, browserAgentBridge: _browserAgentBridge);
-        MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings);
+        MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings, _browserAgentBridge);
         MainWindow = window;
         window.Show();
     }

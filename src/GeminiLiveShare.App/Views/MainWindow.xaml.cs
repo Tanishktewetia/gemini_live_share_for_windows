@@ -9,6 +9,7 @@ using GeminiLiveShare.App.Tray;
 using GeminiLiveShare.Core.Security;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Interop;
+using GeminiLiveShare.Core.BrowserAgent;
 
 namespace GeminiLiveShare.App.Views;
 public partial class MainWindow : Window
@@ -17,6 +18,7 @@ public partial class MainWindow : Window
     private readonly ISensitiveContentFilterSettings _filterSettings;
     private readonly SessionOrchestrator _sessionOrchestrator;
     private readonly OverlayAppearanceSettings _overlaySettings;
+    private readonly BrowserAgentBridge _browserAgentBridge;
     private readonly MainViewModel _viewModel;
     public SettingsViewModel SettingsViewModel { get; }
     private GlobalHotkey? _overlayHotkey;
@@ -35,13 +37,15 @@ public partial class MainWindow : Window
         IApiKeyVaultService apiKeyVault,
         ISensitiveContentFilterSettings filterSettings,
         SessionOrchestrator sessionOrchestrator,
-        OverlayAppearanceSettings overlaySettings)
+        OverlayAppearanceSettings overlaySettings,
+        BrowserAgentBridge browserAgentBridge)
     {
         _viewModel = viewModel;
         _apiKeyVault = apiKeyVault;
         _filterSettings = filterSettings;
         _sessionOrchestrator = sessionOrchestrator;
         _overlaySettings = overlaySettings;
+        _browserAgentBridge = browserAgentBridge;
         SettingsViewModel = new SettingsViewModel(_apiKeyVault, _filterSettings, _overlaySettings);
         _settingsHotkeyConfiguration = new GlobalHotkeySettings().Load();
         InitializeComponent();
@@ -277,6 +281,17 @@ public partial class MainWindow : Window
 
     private void OnPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
+        if (e.Key == Key.F12 && !_isCapturingHotkey)
+        {
+            e.Handled = true;
+            BrowserAgentDebugPanel debugPanel = new(_browserAgentBridge)
+            {
+                Owner = this
+            };
+            debugPanel.Show();
+            return;
+        }
+
         if (!_isCapturingHotkey)
         {
             return;

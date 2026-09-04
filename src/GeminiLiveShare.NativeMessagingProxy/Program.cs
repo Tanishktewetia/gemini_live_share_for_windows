@@ -11,30 +11,53 @@ internal static class Program
             await using NamedPipeRelay relay = await NamedPipeRelay.ConnectAsync().ConfigureAwait(false);
             StdioFramer stdin = new(Console.OpenStandardInput());
             StdioFramer stdout = new(Console.OpenStandardOutput());
-
-            while (true)
-            {
-                byte[]? request = await stdin.ReadMessageAsync().ConfigureAwait(false);
-                if (request is null)
-                {
-                    return 0;
-                }
-
-                await relay.WriteMessageAsync(request).ConfigureAwait(false);
-                byte[]? response = await relay.ReadMessageAsync().ConfigureAwait(false);
-                if (response is null)
-                {
-                    return 1;
-                }
-
-                await stdout.WriteMessageAsync(response).ConfigureAwait(false);
-            }
+            using CancellationTokenSource shutdown = new();
+            Task extensionToApp = ForwardExtensionToAppAsync(stdin, relay, shutdown.Token);
+            Task appToExtension = ForwardAppToExtensionAsync(relay, stdout, shutdown.Token);
+            Task completed = await Task.WhenAny(extensionToApp, appToExtension).ConfigureAwait(false);
+            shutdown.Cancel();
+            await completed.ConfigureAwait(false);
+            return 0;
         }
         catch (Exception exception) when (exception is IOException or TimeoutException or UnauthorizedAccessException)
         {
             Console.Error.WriteLine($"Native messaging proxy could not connect to GeminiLiveShare.App: {exception.Message}");
             await WriteAppNotRunningEventAsync().ConfigureAwait(false);
             return 1;
+        }
+    }
+
+    private static async Task ForwardExtensionToAppAsync(
+        StdioFramer stdin,
+        NamedPipeRelay relay,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            byte[]? message = await stdin.ReadMessageAsync(cancellationToken).ConfigureAwait(false);
+            if (message is null)
+            {
+                return;
+            }
+
+            await relay.WriteMessageAsync(message, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ForwardAppToExtensionAsync(
+        NamedPipeRelay relay,
+        StdioFramer stdout,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            byte[]? message = await relay.ReadMessageAsync(cancellationToken).ConfigureAwait(false);
+            if (message is null)
+            {
+                return;
+            }
+
+            await stdout.WriteMessageAsync(message, cancellationToken).ConfigureAwait(false);
         }
     }
 

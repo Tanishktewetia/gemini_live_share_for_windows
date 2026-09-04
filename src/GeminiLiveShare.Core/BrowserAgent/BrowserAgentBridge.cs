@@ -1,5 +1,8 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.IO.Pipes;
+using System.Text.Json;
+using GeminiLiveShare.Core.BrowserAgent.Models;
 
 namespace GeminiLiveShare.Core.BrowserAgent;
 
@@ -8,7 +11,17 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
     public const string PipeName = "GeminiLiveShare.BrowserAgent";
     private const uint MaximumMessageBytes = 16 * 1024 * 1024;
     private readonly CancellationTokenSource _shutdown = new();
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ToolCallResult>> _pendingResults = new();
+    private readonly BrowserAgentToolRegistry _toolRegistry;
+    private readonly object _pipeLock = new();
     private Task? _listenerTask;
+    private Stream? _connectedPipe;
+
+    public BrowserAgentBridge(BrowserAgentToolRegistry? toolRegistry = null)
+    {
+        _toolRegistry = toolRegistry ?? new BrowserAgentToolRegistry();
+    }
 
     public event EventHandler<string>? StatusChanged;
 
@@ -22,9 +35,52 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
         _listenerTask = ListenAsync(_shutdown.Token);
     }
 
+    public async Task<ToolCallResult> SendToolCallAsync(
+        string toolName,
+        JsonElement args,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_toolRegistry.Contains(toolName))
+        {
+            throw new InvalidOperationException($"Browser agent tool is not registered: {toolName}");
+        }
+
+        Stream pipe;
+        lock (_pipeLock)
+        {
+            pipe = _connectedPipe ?? throw new InvalidOperationException("No browser extension is connected.");
+        }
+
+        string requestId = Guid.NewGuid().ToString("N");
+        TaskCompletionSource<ToolCallResult> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingResults[requestId] = completion;
+        try
+        {
+            ToolCallRequest request = new()
+            {
+                RequestId = requestId,
+                Payload = new ToolCallPayload { Tool = toolName, Args = args }
+            };
+            await WriteMessageAsync(pipe, JsonSerializer.SerializeToUtf8Bytes(request), cancellationToken).ConfigureAwait(false);
+            return await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _pendingResults.TryRemove(requestId, out _);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _shutdown.Cancel();
+        Stream? pipe;
+        lock (_pipeLock)
+        {
+            pipe = _connectedPipe;
+            _connectedPipe = null;
+        }
+
+        pipe?.Dispose();
         if (_listenerTask is not null)
         {
             try
@@ -36,6 +92,12 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
             }
         }
 
+        foreach (TaskCompletionSource<ToolCallResult> completion in _pendingResults.Values)
+        {
+            completion.TrySetCanceled(_shutdown.Token);
+        }
+
+        _writeLock.Dispose();
         _shutdown.Dispose();
     }
 
@@ -52,6 +114,11 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
             try
             {
                 await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+                lock (_pipeLock)
+                {
+                    _connectedPipe = pipe;
+                }
+
                 StatusChanged?.Invoke(this, "Extension connected.");
                 await RelayConnectionAsync(pipe, cancellationToken).ConfigureAwait(false);
             }
@@ -67,10 +134,20 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
             {
                 StatusChanged?.Invoke(this, $"Browser extension message rejected: {exception.Message}");
             }
+            finally
+            {
+                lock (_pipeLock)
+                {
+                    if (ReferenceEquals(_connectedPipe, pipe))
+                    {
+                        _connectedPipe = null;
+                    }
+                }
+            }
         }
     }
 
-    private static async Task RelayConnectionAsync(Stream pipe, CancellationToken cancellationToken)
+    private async Task RelayConnectionAsync(Stream pipe, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -80,7 +157,41 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
                 return;
             }
 
+            if (TryCompleteToolResult(request))
+            {
+                continue;
+            }
+
             await WriteMessageAsync(pipe, request, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private bool TryCompleteToolResult(byte[] message)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(message);
+            JsonElement root = document.RootElement;
+            if (!root.TryGetProperty("type", out JsonElement type) ||
+                type.GetString() != "tool_result" ||
+                !root.TryGetProperty("requestId", out JsonElement requestId))
+            {
+                return false;
+            }
+
+            string? id = requestId.GetString();
+            if (string.IsNullOrWhiteSpace(id) || !_pendingResults.TryRemove(id, out TaskCompletionSource<ToolCallResult>? completion))
+            {
+                return false;
+            }
+
+            ToolCallResult? result = JsonSerializer.Deserialize<ToolCallResult>(message);
+            completion.TrySetResult(result ?? throw new InvalidDataException("The tool result was empty."));
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 
@@ -105,10 +216,7 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
         return message;
     }
 
-    private static async Task WriteMessageAsync(
-        Stream stream,
-        ReadOnlyMemory<byte> message,
-        CancellationToken cancellationToken)
+    private async Task WriteMessageAsync(Stream stream, ReadOnlyMemory<byte> message, CancellationToken cancellationToken)
     {
         if ((ulong)message.Length > MaximumMessageBytes)
         {
@@ -117,15 +225,20 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
 
         byte[] lengthBytes = new byte[sizeof(uint)];
         BinaryPrimitives.WriteUInt32LittleEndian(lengthBytes, (uint)message.Length);
-        await stream.WriteAsync(lengthBytes, cancellationToken).ConfigureAwait(false);
-        await stream.WriteAsync(message, cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await stream.WriteAsync(lengthBytes, cancellationToken).ConfigureAwait(false);
+            await stream.WriteAsync(message, cancellationToken).ConfigureAwait(false);
+            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
-    private static async Task ReadExactlyAsync(
-        Stream stream,
-        Memory<byte> buffer,
-        CancellationToken cancellationToken)
+    private static async Task ReadExactlyAsync(Stream stream, Memory<byte> buffer, CancellationToken cancellationToken)
     {
         while (!buffer.IsEmpty)
         {

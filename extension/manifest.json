@@ -6,7 +6,9 @@
   "permissions": [
     "nativeMessaging",
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs",
+    "alarms"
   ],
   "background": {
     "service_worker": "background/service-worker.js"

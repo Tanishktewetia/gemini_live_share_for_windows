@@ -1,9 +1,11 @@
 let nativePort = null;
+const reconnectAlarmName = "geminiliveshare-native-reconnect";
+chrome.alarms.create(reconnectAlarmName, { periodInMinutes: 0.5 });
 
-chrome.action.onClicked.addListener(() => {
+function connectToNativeHost() {
   if (nativePort) {
-    nativePort.disconnect();
-    nativePort = null;
+    console.log("GeminiLiveShare native messaging is already connected.");
+    return;
   }
 
   try {
@@ -11,6 +13,11 @@ chrome.action.onClicked.addListener(() => {
     console.log("GeminiLiveShare native messaging connected.");
 
     nativePort.onMessage.addListener((message) => {
+      if (message && message.type === "tool_call") {
+        handleToolCall(message).then((result) => nativePort?.postMessage(result));
+        return;
+      }
+
       if (message && message.type === "event" && message.payload && message.payload.code === "app_not_running") {
         console.error("GeminiLiveShare app not connected:", message.payload.message);
         return;
@@ -27,15 +34,106 @@ chrome.action.onClicked.addListener(() => {
       );
       nativePort = null;
     });
+  } catch (error) {
+    console.error("GeminiLiveShare native messaging connection error:", error);
+    nativePort = null;
+  }
+}
 
+async function getActivePage() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) {
+    return { ok: false, accessible: false, error: "No active browser tab was found." };
+  }
+
+  const url = tab.url || "";
+  if (tab.status === "loading") {
+    return {
+      ok: false,
+      accessible: false,
+      state: "still_loading",
+      url: url || null,
+      title: tab.title || null,
+      error: "The active page is still loading; try again when navigation is complete."
+    };
+  }
+
+  if (!url || !tab.title) {
+    return {
+      ok: false,
+      accessible: false,
+      state: "no_page_data",
+      url: url || null,
+      title: tab.title || null,
+      error: "The active tab has no readable page URL or title."
+    };
+  }
+
+  const restricted = /^(chrome|edge|about|view-source|chrome-extension):\/\//i.test(url);
+  if (restricted) {
+    return {
+      ok: false,
+      accessible: false,
+      url,
+      title: tab.title || null,
+      error: "The active page is not accessible to the extension."
+    };
+  }
+
+  return { ok: true, accessible: true, url, title: tab.title || null };
+}
+
+async function handleToolCall(message) {
+  const requestId = message.requestId;
+  const tool = message.payload && message.payload.tool;
+  if (tool !== "get_active_page") {
+    return {
+      type: "tool_result",
+      requestId,
+      payload: { ok: false, error: `Unsupported browser tool: ${tool || "unknown"}` }
+    };
+  }
+
+  try {
+    return { type: "tool_result", requestId, payload: await getActivePage() };
+  } catch (error) {
+    return {
+      type: "tool_result",
+      requestId,
+      payload: {
+        ok: false,
+        accessible: false,
+        error: `Unable to inspect the active page: ${error.message}`
+      }
+    };
+  }
+}
+
+chrome.action.onClicked.addListener(() => {
+  connectToNativeHost();
+  if (nativePort) {
     const testMessage = {
       type: "phase6a-echo-test",
       message: "hello from GeminiLiveShare extension"
     };
     nativePort.postMessage(testMessage);
     console.log("GeminiLiveShare native messaging test sent:", testMessage);
-  } catch (error) {
-    console.error("GeminiLiveShare native messaging connection error:", error);
-    nativePort = null;
   }
 });
+
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create(reconnectAlarmName, { periodInMinutes: 0.5 });
+  connectToNativeHost();
+});
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create(reconnectAlarmName, { periodInMinutes: 0.5 });
+  connectToNativeHost();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === reconnectAlarmName) {
+    connectToNativeHost();
+  }
+});
+
+connectToNativeHost();
