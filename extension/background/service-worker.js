@@ -86,6 +86,44 @@ async function getActivePage() {
 async function handleToolCall(message) {
   const requestId = message.requestId;
   const tool = message.payload && message.payload.tool;
+  if (tool === "get_form_fields") {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || tab.id === undefined) {
+        return { type: "tool_result", requestId, payload: { ok: false, error: "No active browser tab was found." } };
+      }
+
+      const url = tab.url || "";
+      if (/^(chrome|edge|about|view-source|chrome-extension):\/\//i.test(url)) {
+        return {
+          type: "tool_result",
+          requestId,
+          payload: { ok: false, error: "The active page is not accessible to the extension." }
+        };
+      }
+
+      if (tab.status === "loading") {
+        return {
+          type: "tool_result",
+          requestId,
+          payload: { ok: false, state: "still_loading", error: "The active page is still loading; try again when navigation is complete." }
+        };
+      }
+
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content/field-scanner.js"]
+      });
+      return { type: "tool_result", requestId, payload: results[0]?.result || { url, title: tab.title || null, fields: [], notices: [] } };
+    } catch (error) {
+      return {
+        type: "tool_result",
+        requestId,
+        payload: { ok: false, error: `Unable to scan form fields: ${error.message}` }
+      };
+    }
+  }
+
   if (tool !== "get_active_page") {
     return {
       type: "tool_result",

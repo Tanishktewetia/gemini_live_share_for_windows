@@ -13,12 +13,17 @@
             <RowDefinition Height="12" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <Button Grid.Row="0"
-                Width="150"
+        <StackPanel Grid.Row="0" Orientation="Horizontal">
+            <Button Width="150"
                 Height="34"
-                HorizontalAlignment="Left"
                 Content="Get active page"
                 Click="OnGetActivePageClick" />
+            <Button Width="150"
+                Height="34"
+                Margin="10,0,0,0"
+                Content="Get form fields"
+                Click="OnGetFormFieldsClick" />
+        </StackPanel>
         <TextBox x:Name="ResultBox"
                  Grid.Row="2"
                  IsReadOnly="True"
