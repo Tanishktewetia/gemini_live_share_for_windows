@@ -4,6 +4,8 @@ public interface IGeminiLiveClient : IAsyncDisposable
 {
     event EventHandler<byte[]>? AudioReceived;
 
+    event EventHandler? TurnCompleted;
+
     event EventHandler? Interrupted;
 
     event EventHandler<string>? StatusChanged;

@@ -6,6 +6,8 @@ public interface IAudioPlaybackService : IDisposable
 
     void Play(byte[] pcmAudio);
 
+    void CompleteResponse();
+
     void Clear();
 
     void Stop();

@@ -156,6 +156,11 @@ chrome.action.onClicked.addListener(() => {
     };
     nativePort.postMessage(testMessage);
     console.log("GeminiLiveShare native messaging test sent:", testMessage);
+    nativePort.postMessage({
+      type: "event",
+      requestId: crypto.randomUUID(),
+      payload: { code: "page_context_request", reason: "extension_icon_clicked" }
+    });
   }
 });
 

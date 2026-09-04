@@ -27,6 +27,8 @@ public partial class App : System.Windows.Application
         SensitiveContentFilterSettings filterSettings = new();
         OverlayAppearanceSettings overlaySettings = new();
         ChatHistoryRepository chatHistory = new();
+        _browserAgentBridge = new BrowserAgentBridge();
+        _browserAgentBridge.Start();
         _sessionOrchestrator = new SessionOrchestrator(
             new AudioCaptureService(),
             new AudioPlaybackService(),
@@ -36,10 +38,9 @@ public partial class App : System.Windows.Application
                 new CredentialBlurService(),
                 new OcrCredentialDetector(),
                 filterSettings),
-            chatHistory);
+            chatHistory,
+            _browserAgentBridge);
 
-        _browserAgentBridge = new BrowserAgentBridge();
-        _browserAgentBridge.Start();
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory, browserAgentBridge: _browserAgentBridge);
         MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings, _browserAgentBridge);
         MainWindow = window;

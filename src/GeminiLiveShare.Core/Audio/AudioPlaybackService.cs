@@ -12,6 +12,8 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
     private BufferedWaveProvider? _buffer;
     private WaveOutEvent? _waveOut;
     private byte? _pendingSampleByte;
+    private byte[] _heldTail = [];
+    private const int FadeTailBytes = 960;
 
     public void Start()
     {
@@ -53,26 +55,59 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
                 return;
             }
 
-            int offset = 0;
+            byte[] incoming = pcmAudio;
             if (_pendingSampleByte.HasValue)
             {
-                byte[] firstSample = [_pendingSampleByte.Value, pcmAudio[0]];
-                _buffer.AddSamples(firstSample, 0, firstSample.Length);
+                incoming = new byte[pcmAudio.Length + 1];
+                incoming[0] = _pendingSampleByte.Value;
+                Buffer.BlockCopy(pcmAudio, 0, incoming, 1, pcmAudio.Length);
                 _pendingSampleByte = null;
-                offset = 1;
             }
 
-            int remaining = pcmAudio.Length - offset;
-            if ((remaining & 1) != 0)
+            int incomingLength = incoming.Length;
+            if ((incomingLength & 1) != 0)
             {
-                _pendingSampleByte = pcmAudio[^1];
-                remaining--;
+                _pendingSampleByte = incoming[^1];
+                incomingLength--;
             }
 
-            if (remaining > 0)
+            if (incomingLength > 0)
             {
-                _buffer.AddSamples(pcmAudio, offset, remaining);
+                byte[] combined = new byte[_heldTail.Length + incomingLength];
+                Buffer.BlockCopy(_heldTail, 0, combined, 0, _heldTail.Length);
+                Buffer.BlockCopy(incoming, 0, combined, _heldTail.Length, incomingLength);
+                int bytesToWrite = Math.Max(0, combined.Length - FadeTailBytes);
+                if (bytesToWrite > 0)
+                {
+                    _buffer.AddSamples(combined, 0, bytesToWrite);
+                }
+
+                _heldTail = combined[bytesToWrite..];
             }
+        }
+    }
+
+    public void CompleteResponse()
+    {
+        lock (_syncRoot)
+        {
+            if (_buffer is null || _heldTail.Length == 0)
+            {
+                return;
+            }
+
+            for (int offset = 0; offset + 1 < _heldTail.Length; offset += 2)
+            {
+                double gain = 1.0 - (offset / (double)Math.Max(2, _heldTail.Length - 2));
+                short sample = BitConverter.ToInt16(_heldTail, offset);
+                short fadedSample = (short)Math.Clamp((int)Math.Round(sample * gain), short.MinValue, short.MaxValue);
+                byte[] bytes = BitConverter.GetBytes(fadedSample);
+                _heldTail[offset] = bytes[0];
+                _heldTail[offset + 1] = bytes[1];
+            }
+
+            _buffer.AddSamples(_heldTail, 0, _heldTail.Length);
+            _heldTail = [];
         }
     }
 
@@ -82,6 +117,7 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
         {
             _buffer?.ClearBuffer();
             _pendingSampleByte = null;
+            _heldTail = [];
         }
     }
 
@@ -94,6 +130,7 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
             _waveOut = null;
             _buffer = null;
             _pendingSampleByte = null;
+            _heldTail = [];
         }
     }
 

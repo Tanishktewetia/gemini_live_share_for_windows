@@ -25,6 +25,8 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
 
     public event EventHandler<string>? StatusChanged;
 
+    public event EventHandler<BrowserAgentEventArgs>? EventReceived;
+
     public void Start()
     {
         if (_listenerTask is not null)
@@ -157,12 +159,34 @@ public sealed class BrowserAgentBridge : IAsyncDisposable
                 return;
             }
 
-            if (TryCompleteToolResult(request))
+            if (TryCompleteToolResult(request) || TryRaiseEvent(request))
             {
                 continue;
             }
 
             await WriteMessageAsync(pipe, request, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private bool TryRaiseEvent(byte[] message)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(message);
+            JsonElement root = document.RootElement;
+            if (!root.TryGetProperty("type", out JsonElement type) ||
+                type.GetString() != "event" ||
+                !root.TryGetProperty("payload", out JsonElement payload))
+            {
+                return false;
+            }
+
+            EventReceived?.Invoke(this, new BrowserAgentEventArgs(payload));
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

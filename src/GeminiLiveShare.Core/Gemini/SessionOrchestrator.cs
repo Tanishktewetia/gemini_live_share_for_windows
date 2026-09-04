@@ -1,6 +1,9 @@
 using GeminiLiveShare.Core.Audio;
+using GeminiLiveShare.Core.BrowserAgent;
+using GeminiLiveShare.Core.BrowserAgent.Models;
 using GeminiLiveShare.Core.Storage;
 using GeminiLiveShare.Core.Vision;
+using System.Text.Json;
 using Windows.Graphics.Imaging;
 using System.Threading.Channels;
 
@@ -20,6 +23,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private readonly IScreenCaptureService _screenCapture;
     private readonly IImageProcessingService _imageProcessing;
     private readonly IChatHistoryRepository _chatHistory;
+    private readonly BrowserAgentBridge? _browserAgentBridge;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private CancellationTokenSource? _sessionCancellation;
     private CancellationTokenSource? _mediaCancellation;
@@ -40,7 +44,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         IGeminiLiveClient liveClient,
         IScreenCaptureService screenCapture,
         IImageProcessingService imageProcessing,
-        IChatHistoryRepository chatHistory)
+        IChatHistoryRepository chatHistory,
+        BrowserAgentBridge? browserAgentBridge = null)
     {
         _audioCapture = audioCapture;
         _audioPlayback = audioPlayback;
@@ -48,12 +53,18 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _screenCapture = screenCapture;
         _imageProcessing = imageProcessing;
         _chatHistory = chatHistory;
+        _browserAgentBridge = browserAgentBridge;
         _audioCapture.AudioCaptured += OnAudioCaptured;
         _liveClient.AudioReceived += OnAudioReceived;
+        _liveClient.TurnCompleted += OnTurnCompleted;
         _liveClient.Interrupted += OnInterrupted;
         _liveClient.StatusChanged += OnClientStatusChanged;
         _liveClient.TranscriptionReceived += OnTranscriptionReceived;
         _liveClient.ConnectionAvailabilityChanged += OnConnectionAvailabilityChanged;
+        if (_browserAgentBridge is not null)
+        {
+            _browserAgentBridge.EventReceived += OnBrowserAgentEventReceived;
+        }
         _audioCapture.CaptureFailed += OnCaptureFailed;
     }
 
@@ -292,10 +303,15 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _audioCapture.AudioCaptured -= OnAudioCaptured;
         _audioCapture.CaptureFailed -= OnCaptureFailed;
         _liveClient.AudioReceived -= OnAudioReceived;
+        _liveClient.TurnCompleted -= OnTurnCompleted;
         _liveClient.Interrupted -= OnInterrupted;
         _liveClient.StatusChanged -= OnClientStatusChanged;
         _liveClient.TranscriptionReceived -= OnTranscriptionReceived;
         _liveClient.ConnectionAvailabilityChanged -= OnConnectionAvailabilityChanged;
+        if (_browserAgentBridge is not null)
+        {
+            _browserAgentBridge.EventReceived -= OnBrowserAgentEventReceived;
+        }
         _audioCapture.Dispose();
         _audioPlayback.Dispose();
         await _screenCapture.DisposeAsync().ConfigureAwait(false);
@@ -326,6 +342,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         RestartSpeakingSilenceTimer();
     }
 
+    private void OnTurnCompleted(object? sender, EventArgs e) => _audioPlayback.CompleteResponse();
+
     private void OnInterrupted(object? sender, EventArgs e)
     {
         StopSpeaking();
@@ -353,11 +371,62 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 Text = e.Text,
                 CreatedAtUtc = DateTime.UtcNow
             }).ConfigureAwait(false);
+            if (e.Role.Equals("user", StringComparison.OrdinalIgnoreCase) && IsPageContextRequest(e.Text))
+            {
+                await SendBrowserPageContextAsync().ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {
             StatusChanged?.Invoke(this, $"Unable to save chat transcript: {ex.Message}");
         }
+    }
+
+    private void OnBrowserAgentEventReceived(object? sender, BrowserAgentEventArgs e)
+    {
+        if (e.Payload.TryGetProperty("code", out JsonElement code) &&
+            code.GetString() == "page_context_request")
+        {
+            _ = SendBrowserPageContextAsync();
+        }
+    }
+
+    private async Task SendBrowserPageContextAsync()
+    {
+        if (!IsRunning || !IsConnected || _browserAgentBridge is null)
+        {
+            return;
+        }
+
+        try
+        {
+            using JsonDocument emptyArguments = JsonDocument.Parse("{}");
+            ToolCallResult page = await _browserAgentBridge
+                .SendToolCallAsync("get_active_page", emptyArguments.RootElement)
+                .ConfigureAwait(false);
+            ToolCallResult fields = await _browserAgentBridge
+                .SendToolCallAsync("get_form_fields", emptyArguments.RootElement)
+                .ConfigureAwait(false);
+            string context = "Browser page context was explicitly requested by the user. " +
+                "Use only the supplied URL, title, and field metadata. Do not invent fields or values. " +
+                "Password fields are intentionally omitted. Button fields are controls, not fillable text fields.\n" +
+                $"Active page: {page.Payload.GetRawText()}\nForm fields: {fields.Payload.GetRawText()}";
+            await _liveClient.SendTextAsync(context).ConfigureAwait(false);
+            StatusChanged?.Invoke(this, "Browser page context sent to Gemini");
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke(this, $"Unable to fetch browser page context: {ex.Message}");
+        }
+    }
+
+    private static bool IsPageContextRequest(string text)
+    {
+        string normalized = text.Trim().ToLowerInvariant();
+        return normalized.Contains("look at this page", StringComparison.Ordinal) ||
+            normalized.Contains("what fields are on this form", StringComparison.Ordinal) ||
+            normalized.Contains("what fields are on the form", StringComparison.Ordinal) ||
+            normalized.Contains("tell me what fields are on it", StringComparison.Ordinal);
     }
 
     private async void OnConnectionAvailabilityChanged(object? sender, ConnectionAvailabilityChangedEventArgs e)

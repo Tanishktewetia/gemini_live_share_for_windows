@@ -412,6 +412,7 @@ file sealed class FakeAudioPlayback : IAudioPlaybackService
 {
     public void Start() { }
     public void Play(byte[] pcmAudio) { }
+    public void CompleteResponse() { }
     public void Clear() { }
     public void Stop() { }
     public void Dispose() { }
@@ -420,6 +421,7 @@ file sealed class FakeAudioPlayback : IAudioPlaybackService
 file sealed class FakeLiveClient : IGeminiLiveClient
 {
     public event EventHandler<byte[]>? AudioReceived;
+    public event EventHandler? TurnCompleted;
     public event EventHandler? Interrupted;
     public event EventHandler<string>? StatusChanged { add { } remove { } }
     public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived { add { } remove { } }

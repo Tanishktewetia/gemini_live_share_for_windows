@@ -24,6 +24,9 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         "The realtime video stream contains screenshots from the user's primary monitor only. " +
         "When the user asks about the screen, inspect the newest available screenshot before answering. " +
         "If no screenshot has been sent in the current session, you have no visual access and must not claim to see the desktop. " +
+        "Browser page context is available only after an explicit user request such as 'look at this page' or 'what fields are on this form'. " +
+        "When browser page context is supplied, use only its URL, title, and fields; never invent missing values. " +
+        "Password fields are omitted, and button fields are controls rather than fillable text fields. " +
         "For text, read the relevant area carefully and preserve exact spelling, capitalization, and numbers; " +
         "do not guess text that is not legible. For icons, identify the visible icon and its label or location. " +
         "When asked to count desktop icons, scan the complete desktop systematically from top to bottom and left to right, " +
@@ -35,6 +38,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         "so say exactly, 'I don't see your screen right now; I'm not receiving any visuals.'";
 
     public event EventHandler<byte[]>? AudioReceived;
+    public event EventHandler? TurnCompleted;
     public event EventHandler? Interrupted;
     public event EventHandler<string>? StatusChanged;
     public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived;
@@ -372,6 +376,10 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         foreach (byte[] audio in message.AudioChunks)
         {
             AudioReceived?.Invoke(this, audio);
+        }
+        if (message.TurnComplete && !message.Interrupted)
+        {
+            TurnCompleted?.Invoke(this, EventArgs.Empty);
         }
     }
 

@@ -281,6 +281,7 @@ public partial class MainWindow : Window
 
     private void OnPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
+    #if DEBUG
         if (e.Key == Key.F12 && !_isCapturingHotkey)
         {
             e.Handled = true;
@@ -291,6 +292,7 @@ public partial class MainWindow : Window
             debugPanel.Show();
             return;
         }
+#endif
 
         if (!_isCapturingHotkey)
         {
