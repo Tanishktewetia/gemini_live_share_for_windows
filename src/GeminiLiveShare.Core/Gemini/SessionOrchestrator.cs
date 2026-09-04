@@ -13,7 +13,6 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     // to replaying old speech after a transient transport delay.
     private const int MicrophoneQueueCapacity = 2;
     private static readonly TimeSpan SpeakingSilenceThreshold = TimeSpan.FromMilliseconds(350);
-    private const string SanitizedFrameDirectory = @"C:\Temp\gemini-frames";
 
     private readonly IAudioCaptureService _audioCapture;
     private readonly IAudioPlaybackService _audioPlayback;
@@ -32,6 +31,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private string? _sessionId;
     private bool _microphoneDesired;
     private bool _screenShareDesired;
+    private string? _apiKey;
+    private bool _resettingVisualContext;
 
     public SessionOrchestrator(
         IAudioCaptureService audioCapture,
@@ -94,13 +95,14 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             try
             {
                 SetConnectingState(true);
+                _apiKey = apiKey;
                 _sessionId = Guid.NewGuid().ToString("N");
                 await _liveClient.ConnectAsync(apiKey, cancellationToken).ConfigureAwait(false);
                 _audioPlayback.Start();
                 _sessionCancellation = sessionCancellation;
                 SetRunningState(true);
                 _microphoneDesired = true;
-                _screenShareDesired = true;
+                _screenShareDesired = false;
                 SetMicrophoneState(true);
                 StartMedia();
                 StatusChanged?.Invoke(this, "Conversation started");
@@ -156,6 +158,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             _sessionCancellation?.Dispose();
             _sessionCancellation = null;
             _sessionId = null;
+            _apiKey = null;
             StatusChanged?.Invoke(this, "Conversation stopped");
         }
         finally
@@ -234,7 +237,11 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             // capture loop to unwind, but no new frame is allowed past this point.
             SetScreenShareState(false);
             await StopVideoSenderAsync().ConfigureAwait(false);
-            if (_liveClient.IsConnected)
+            if (_liveClient.IsConnected && !string.IsNullOrWhiteSpace(_apiKey))
+            {
+                await ResetVisualContextAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (_liveClient.IsConnected)
             {
                 try
                 {
@@ -253,6 +260,29 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         finally
         {
             _lifecycleLock.Release();
+        }
+    }
+
+    private async Task ResetVisualContextAsync(CancellationToken cancellationToken)
+    {
+        // A Live session retains previously sent images. Reconnecting without a
+        // resumption handle is the only reliable way to make screen-off private.
+        _resettingVisualContext = true;
+        try
+        {
+            await StopMediaAsync().ConfigureAwait(false);
+            await _liveClient.DisconnectAsync(cancellationToken).ConfigureAwait(false);
+            await _liveClient.ConnectAsync(_apiKey!, cancellationToken).ConfigureAwait(false);
+            StartMedia();
+            await _liveClient.SendTextAsync(
+                "Screen sharing is disabled. This session contains no visual input. " +
+                "If the user asks about anything visual, say exactly: I don't see your screen right now; " +
+                "I'm not receiving any visuals.", cancellationToken).ConfigureAwait(false);
+            StatusChanged?.Invoke(this, "Screen share OFF; visual context cleared");
+        }
+        finally
+        {
+            _resettingVisualContext = false;
         }
     }
 
@@ -308,7 +338,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private async void OnTranscriptionReceived(object? sender, TranscriptionEventArgs e)
     {
         string? sessionId = _sessionId;
-        if (sessionId is null || string.IsNullOrWhiteSpace(e.Text))
+        if (sessionId is null || string.IsNullOrWhiteSpace(e.Text) ||
+            e.Text.Trim().Equals("hello", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -332,6 +363,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private async void OnConnectionAvailabilityChanged(object? sender, ConnectionAvailabilityChangedEventArgs e)
     {
         ConnectionStateChanged?.Invoke(this, EventArgs.Empty);
+        if (_resettingVisualContext)
+        {
+            return;
+        }
         // The initial connection becomes available while StartAsync still owns the lifecycle lock.
         // StartAsync starts media itself, so do not queue a duplicate start behind that lock.
         if (!IsRunning)
@@ -512,46 +547,12 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
-        // Persist exactly the sanitized JPEG that will be sent. This is deliberately awaited:
-        // downstream Gemini processing is not permitted until the local blurred image exists.
-        if (!await SaveSanitizedFrameAsync(base64Jpeg, cancellationToken).ConfigureAwait(false))
-        {
-            StatusChanged?.Invoke(this, $"Sanitized frame could not be saved to {SanitizedFrameDirectory}; frame dropped.");
-            return;
-        }
-
         if (!_screenShareDesired)
         {
             return;
         }
 
         await _liveClient.SendVideoFrameAsync(base64Jpeg, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async Task<bool> SaveSanitizedFrameAsync(
-        string base64Jpeg,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            Directory.CreateDirectory(SanitizedFrameDirectory);
-            string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
-            string outputPath = Path.Combine(SanitizedFrameDirectory, $"frame_{timestamp}.jpg");
-            await File.WriteAllBytesAsync(
-                outputPath,
-                Convert.FromBase64String(base64Jpeg),
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Trace.WriteLine($"Unable to save sanitized frame: {ex.Message}");
-            return false;
-        }
     }
 
     private async Task StopVideoSenderAsync()

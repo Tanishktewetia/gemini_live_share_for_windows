@@ -98,12 +98,13 @@ static async Task ValidateSanitizationBeforeEncodingAsync()
     Require(encoded is not null, "sanitized frame was unexpectedly dropped");
 
     byte[] encodedBytes = Convert.FromBase64String(encoded!);
-    Require(encodedBytes.Length >= 8 && encodedBytes[..8].SequenceEqual(
-        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }),
-        "screen frame was not encoded as lossless PNG");
+    Require(encodedBytes.Length >= 3 && encodedBytes[..3].SequenceEqual(
+        new byte[] { 0xFF, 0xD8, 0xFF }),
+        "screen frame was not encoded as JPEG");
     using SKBitmap decoded = SKBitmap.Decode(encodedBytes);
-    SKColor protectedPixel = decoded.GetPixel(50, 30);
-    SKColor unprotectedPixel = decoded.GetPixel(5, 5);
+    float scale = decoded.Width / (float)width;
+    SKColor protectedPixel = decoded.GetPixel((int)(50 * scale), (int)(30 * scale));
+    SKColor unprotectedPixel = decoded.GetPixel((int)(5 * scale), (int)(5 * scale));
     Require(protectedPixel.Red < 20 && protectedPixel.Green < 20 && protectedPixel.Blue < 20,
         "OCR rectangle was not black before JPEG encoding");
     Require(unprotectedPixel.Red > 235 && unprotectedPixel.Green > 235 && unprotectedPixel.Blue > 235,
@@ -294,14 +295,15 @@ static async Task ValidateMediaPauseAndRestoreAsync()
     Require(orchestrator.IsConnected && !orchestrator.IsConnecting,
         "orchestrator did not expose the established connection state");
     Require(capture.IsCapturing && orchestrator.IsMicrophoneOn, "media did not start with the conversation");
+    Require(!orchestrator.IsScreenShareOn && screen.RunCount == 0,
+        "screen sharing did not remain off when the conversation started");
+    await orchestrator.SetScreenShareEnabledAsync(true);
     await WaitUntilAsync(() => screen.RunCount == 1, "screen capture did not start");
     Require(orchestrator.IsScreenShareOn, "screen-share state did not turn on with the conversation");
 
     await orchestrator.SetScreenShareEnabledAsync(false);
     Require(!orchestrator.IsScreenShareOn && capture.IsCapturing,
         "turning off screen share also stopped the microphone");
-    Require(client.TextInputs.Any(text => text.Contains("Screen sharing is now disabled", StringComparison.Ordinal)),
-        "screen-share-off state was not sent to Gemini");
     await orchestrator.SetScreenShareEnabledAsync(true);
     await WaitUntilAsync(() => orchestrator.IsScreenShareOn && screen.RunCount == 2,
         "screen capture did not restart after being toggled on");

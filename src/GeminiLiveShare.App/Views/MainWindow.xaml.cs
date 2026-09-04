@@ -1,6 +1,7 @@
 ﻿using System.Windows;
 using System.Windows.Input;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Interop;
 using GeminiLiveShare.App.ViewModels;
@@ -67,16 +68,20 @@ public partial class MainWindow : Window
     {
         _sidebarWasCollapsedBeforeSettings = _isSidebarCollapsed;
         _isSidebarCollapsed = false;
-        SidebarColumn.Width = new GridLength(360);
-        HistoryPanel.Visibility = Visibility.Collapsed;
+        SidebarHost.Children.Remove(SettingsPanel);
+        MainLayout.Children.Add(SettingsPanel);
+        Grid.SetColumn(SettingsPanel, 1);
+        System.Windows.Controls.Panel.SetZIndex(SettingsPanel, 1);
         SettingsPanel.Visibility = Visibility.Visible;
-        SidebarToggleButton.ToolTip = "Collapse settings";
+        SidebarToggleButton.ToolTip = "Collapse history";
     }
 
     private void OnBackFromSettingsClick(object sender, RoutedEventArgs e)
     {
         SettingsPanel.Visibility = Visibility.Collapsed;
-        HistoryPanel.Visibility = Visibility.Visible;
+        MainLayout.Children.Remove(SettingsPanel);
+        SidebarHost.Children.Add(SettingsPanel);
+        Grid.SetColumn(SettingsPanel, 0);
         _isSidebarCollapsed = _sidebarWasCollapsedBeforeSettings;
         SidebarColumn.Width = _isSidebarCollapsed ? new GridLength(0) : new GridLength(280);
         SidebarToggleButton.ToolTip = _isSidebarCollapsed ? "Show history" : "Collapse history";
@@ -159,6 +164,17 @@ public partial class MainWindow : Window
         _isSidebarCollapsed = !_isSidebarCollapsed;
         SidebarColumn.Width = _isSidebarCollapsed ? new GridLength(0) : new GridLength(260);
         SidebarToggleButton.ToolTip = _isSidebarCollapsed ? "Show history" : "Collapse history";
+    }
+
+    private void OnSidebarResizeDragDelta(object sender, DragDeltaEventArgs e)
+    {
+        if (_isSidebarCollapsed || SettingsPanel.Visibility == Visibility.Visible)
+        {
+            return;
+        }
+
+        double width = Math.Clamp(SidebarColumn.ActualWidth + e.HorizontalChange, SidebarColumn.MinWidth, SidebarColumn.MaxWidth);
+        SidebarColumn.Width = new GridLength(width);
     }
 
     private async void OnStartNewConversationClick(object sender, RoutedEventArgs e)

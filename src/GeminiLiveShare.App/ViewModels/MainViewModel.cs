@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using GeminiLiveShare.Core.BrowserAgent;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Security;
 using GeminiLiveShare.Core.Storage;
@@ -30,7 +31,8 @@ public partial class MainViewModel : ObservableObject
         SessionOrchestrator orchestrator,
         IApiKeyVaultService apiKeyVault,
         IChatHistoryRepository history,
-        ITitleGenerationService? titleGeneration = null)
+        ITitleGenerationService? titleGeneration = null,
+        BrowserAgentBridge? browserAgentBridge = null)
     {
         _orchestrator = orchestrator;
         _apiKeyVault = apiKeyVault;
@@ -40,6 +42,10 @@ public partial class MainViewModel : ObservableObject
         _orchestrator.StatusChanged += OnStatusChanged;
         _orchestrator.MicrophoneStateChanged += OnMicrophoneStateChanged;
         _history.MessageAdded += OnMessageAdded;
+        if (browserAgentBridge is not null)
+        {
+            browserAgentBridge.StatusChanged += OnBrowserAgentStatusChanged;
+        }
         _ = LoadSessionsAsync();
     }
 
@@ -217,6 +223,11 @@ public partial class MainViewModel : ObservableObject
         IsRunning = false;
         IsMicrophoneOn = false;
         ConnectionStatus = "Disconnected";
+        if (SelectedSession is { IsTitleUserEdited: false } session && _titleGenerationStarted.Add(session.SessionId))
+        {
+            await Task.Delay(750);
+            await GenerateTitleAsync(session);
+        }
     }
 
     private void ClearSelection()
@@ -236,6 +247,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     private void OnStatusChanged(object? sender, string status) => _uiContext.Post(_ => ConnectionStatus = status, null);
+    private void OnBrowserAgentStatusChanged(object? sender, string status) => _uiContext.Post(_ => ConnectionStatus = status, null);
     private void OnMicrophoneStateChanged(object? sender, EventArgs e) => _uiContext.Post(_ =>
     {
         IsMicrophoneOn = _orchestrator.IsMicrophoneOn;
@@ -268,14 +280,9 @@ public partial class MainViewModel : ObservableObject
             HasMessages = true;
         }
 
-        if (message.Role.Equals("user", StringComparison.OrdinalIgnoreCase) &&
-            !session.IsTitleUserEdited && _titleGenerationStarted.Add(session.SessionId))
-        {
-            _ = GenerateTitleAsync(session, message.Text);
-        }
     }
 
-    private async Task GenerateTitleAsync(ChatSessionViewModel session, string firstUserMessage)
+    private async Task GenerateTitleAsync(ChatSessionViewModel session)
     {
         try
         {
@@ -285,8 +292,14 @@ public partial class MainViewModel : ObservableObject
                 return;
             }
 
+            IReadOnlyList<ChatMessage> messages = await _history.GetBySessionAsync(session.SessionId).ConfigureAwait(false);
+            if (!messages.Any(message => message.Role.Equals("user", StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
             string? title = await _titleGeneration
-                .GenerateAsync(firstUserMessage, apiKey).ConfigureAwait(false);
+                .GenerateAsync(messages, apiKey).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(title))
             {
                 return;

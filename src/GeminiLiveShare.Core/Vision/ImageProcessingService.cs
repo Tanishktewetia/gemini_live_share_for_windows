@@ -12,7 +12,8 @@ public sealed class ImageProcessingService : IImageProcessingService
     // Keep the full monitor width for ordinary 1080p/1440p displays and only reduce
     // very large captures. This is important because desktop labels and icon glyphs
     // occupy very few pixels in a full-screen frame.
-    private const int TargetWidth = 2560;
+    private const int TargetWidth = 3200;
+    private const int MinimumOutputWidth = 2048;
     private static readonly TimeSpan FrameProcessingBudget = TimeSpan.FromMilliseconds(1000);
 
     private readonly ICredentialBlurService _credentialBlur;
@@ -84,7 +85,7 @@ public sealed class ImageProcessingService : IImageProcessingService
             return null;
         }
 
-        int outputWidth = Math.Min(TargetWidth, source.Width);
+        int outputWidth = Math.Min(TargetWidth, Math.Max(MinimumOutputWidth, source.Width));
         SKBitmap? resized = null;
         if (outputWidth != source.Width)
         {
@@ -103,9 +104,7 @@ public sealed class ImageProcessingService : IImageProcessingService
         try
         {
             using SKImage image = SKImage.FromBitmap(output);
-            // PNG is lossless and avoids ringing/block artifacts around small desktop
-            // labels and icon edges. Gemini receives this as image/png in VideoBlob.
-            using SKData encodedImage = image.Encode(SKEncodedImageFormat.Png, 100);
+            using SKData encodedImage = image.Encode(SKEncodedImageFormat.Jpeg, 98);
             encodedBytes = encodedImage.ToArray();
         }
         finally

@@ -2,6 +2,7 @@
 using GeminiLiveShare.App.ViewModels;
 using GeminiLiveShare.App.Views;
 using GeminiLiveShare.Core.Audio;
+using GeminiLiveShare.Core.BrowserAgent;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
@@ -16,6 +17,7 @@ namespace GeminiLiveShare.App;
 public partial class App : System.Windows.Application
 {
     private SessionOrchestrator? _sessionOrchestrator;
+    private BrowserAgentBridge? _browserAgentBridge;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -36,7 +38,9 @@ public partial class App : System.Windows.Application
                 filterSettings),
             chatHistory);
 
-        MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory);
+        _browserAgentBridge = new BrowserAgentBridge();
+        _browserAgentBridge.Start();
+        MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory, browserAgentBridge: _browserAgentBridge);
         MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings);
         MainWindow = window;
         window.Show();
@@ -47,6 +51,11 @@ public partial class App : System.Windows.Application
         if (_sessionOrchestrator is not null)
         {
             _sessionOrchestrator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+
+        if (_browserAgentBridge is not null)
+        {
+            _browserAgentBridge.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
         base.OnExit(e);

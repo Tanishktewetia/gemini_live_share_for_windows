@@ -35,7 +35,7 @@ public sealed class AudioBlob
 public sealed class VideoBlob
 {
     [JsonPropertyName("mimeType")]
-    public string MimeType { get; init; } = "image/png";
+    public string MimeType { get; init; } = "image/jpeg";
 
     [JsonPropertyName("data")]
     public required string Data { get; init; }

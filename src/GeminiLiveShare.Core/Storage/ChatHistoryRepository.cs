@@ -40,19 +40,21 @@ public sealed class ChatHistoryRepository : IChatHistoryRepository
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         await _initialization.ConfigureAwait(false);
-        return await _connection.Table<ChatMessage>()
+        IReadOnlyList<ChatMessage> messages = await _connection.Table<ChatMessage>()
             .Where(message => message.SessionId == sessionId)
             .OrderBy(message => message.Id)
             .ToListAsync().ConfigureAwait(false);
+        return messages.Where(IsDisplayable).ToList();
     }
 
     public async Task<IReadOnlyList<ChatMessage>> GetAllAsync()
     {
         await _initialization.ConfigureAwait(false);
-        return await _connection.Table<ChatMessage>()
+        IReadOnlyList<ChatMessage> messages = await _connection.Table<ChatMessage>()
             .OrderByDescending(message => message.CreatedAtUtc)
             .ThenByDescending(message => message.Id)
             .ToListAsync().ConfigureAwait(false);
+        return messages.Where(IsDisplayable).ToList();
     }
 
     public async Task<IReadOnlyList<ChatSessionMetadata>> GetSessionMetadataAsync()
@@ -98,4 +100,7 @@ public sealed class ChatHistoryRepository : IChatHistoryRepository
         await _connection.CreateTableAsync<ChatMessage>().ConfigureAwait(false);
         await _connection.CreateTableAsync<ChatSessionMetadata>().ConfigureAwait(false);
     }
+
+    private static bool IsDisplayable(ChatMessage message) =>
+        !message.Text.Trim().Equals("hello", StringComparison.OrdinalIgnoreCase);
 }

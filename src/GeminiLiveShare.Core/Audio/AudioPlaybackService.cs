@@ -33,8 +33,8 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
 
             _waveOut = new WaveOutEvent
             {
-                DesiredLatency = 50,
-                NumberOfBuffers = 2
+                DesiredLatency = 100,
+                NumberOfBuffers = 3
             };
             _waveOut.Init(_buffer);
             _waveOut.Play();

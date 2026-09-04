@@ -1,27 +1,35 @@
 using System.Text;
 using System.Text.Json;
+using GeminiLiveShare.Core.Storage;
 
 namespace GeminiLiveShare.Core.Gemini;
 
 public sealed class GeminiTitleGenerationService : ITitleGenerationService
 {
-    private const string Model = "gemini-3.7-flash";
+    private const string Model = "gemini-2.5-flash";
     private const int MaxTitleLength = 60;
     private static readonly Uri Endpoint = new(
         $"https://generativelanguage.googleapis.com/v1beta/models/{Model}:generateContent");
     private static readonly HttpClient HttpClient = new();
 
     public async Task<string?> GenerateAsync(
-        string firstUserMessage,
+        IReadOnlyList<ChatMessage> messages,
         string apiKey,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(firstUserMessage);
+        ArgumentNullException.ThrowIfNull(messages);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
 
-        string prompt = "Create a concise title for this conversation. Return only the title, with 3 to 6 words, " +
+        string conversation = string.Join("\n", messages
+            .Where(message => !string.IsNullOrWhiteSpace(message.Text))
+            .Select(message => $"{message.Role}: {message.Text.Trim()}")
+            .TakeLast(40));
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversation);
+
+        string prompt = "You are naming a completed conversation. Infer the main topic from the entire transcript, " +
+                "not just its first line. Create a concise descriptive title with 3 to 6 words. Return only the title, " +
                         "no quotation marks, no punctuation at the end, and never more than 60 characters. " +
-                        $"Conversation opener: {firstUserMessage.Trim()[..Math.Min(firstUserMessage.Trim().Length, 2000)]}";
+                        $"Conversation transcript:\n{conversation[..Math.Min(conversation.Length, 8000)]}";
         object request = new
         {
             contents = new[]
