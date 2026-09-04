@@ -11,7 +11,12 @@ chrome.action.onClicked.addListener(() => {
     console.log("GeminiLiveShare native messaging connected.");
 
     nativePort.onMessage.addListener((message) => {
-      console.log("GeminiLiveShare native messaging echo received:", message);
+      if (message && message.type === "event" && message.payload && message.payload.code === "app_not_running") {
+        console.error("GeminiLiveShare app not connected:", message.payload.message);
+        return;
+      }
+
+      console.log("GeminiLiveShare native messaging response received:", message);
     });
 
     nativePort.onDisconnect.addListener(() => {
