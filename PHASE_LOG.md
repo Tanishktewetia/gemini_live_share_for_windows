@@ -3,6 +3,31 @@
 Running record of every fix and phase verification, newest first. Each entry lists status, cause,
 implementation, files changed, verification performed, and manual test steps.
 
+> This is history, not current state. For what the project is and where it stands today, read
+> [`PROJECT_STATE.md`](PROJECT_STATE.md). Open this file when you need the measurements and
+> reasoning behind a past fix.
+
+## Diagnosis - Invented screen details, no web search (2026-09-17/18)
+
+- **Status:** Diagnosed from real sessions and the diagnostics log. Fixes planned as Phase 7, not yet implemented.
+- **Reported:** Gemini named taskbar apps that were not on screen (Edge, Teams, VS Code), guessed the mouse pointer's
+  location, gave a made-up desktop icon count ("42") and a made-up icon position, and said it had no internet access.
+- **Evidence gathered:**
+  - Session log `session-20260917.log`: 160 frames sent, **0 dropped**, ~228 KB each, JPEG quality 90, uploads 2 ms
+    average. The capture pipeline is healthy, so lost detail is not local.
+  - Same log, twice (21:35:59 and 22:07:16): `Web search is not available for this API key (no quota)`. The server
+    rejects the `googleSearch` setup in ~400 ms; the code sending it is correct.
+  - Google AI Studio console: project on the **Free tier**, with 409/429 errors spiking on Sep 17. The Live API itself
+    shows "Unlimited" RPM, so Live is not the constraint; search grounding is a separate paid capability.
+  - The mid-conversation "Hello! How can I help you today?" was **not** a failed session resumption, as first suspected.
+    The log shows a deliberate disconnect/reconnect at 21:39:12 followed by `Screen share OFF; visual context cleared`:
+    a new conversation being started.
+- **Cause of the invented details:** the Live API compresses each video frame to a small fixed size, so small icons and
+  text are unreadable by the time the model sees them, and it fills the gap with a plausible guess. Sending larger
+  frames is not a fix: it starves the microphone over the shared WebSocket (see the Production Hardening entry below).
+- **Planned fix:** `docs/PHASE7_ACCURACY_PLAN.md` - answer from UI Automation instead of vision where possible, add a
+  zoom tool for the rest, instruct the model never to guess, and add an on-screen highlight so it can point at controls.
+
 ## Production Hardening - Screen-share bandwidth, broken voice, web search, app naming, header title
 
 - **Date:** 2026-09-17

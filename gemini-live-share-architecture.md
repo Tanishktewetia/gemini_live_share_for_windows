@@ -1,6 +1,13 @@
 # Gemini Live Share — Windows App
 ## Architecture & Phased Build Plan (for building with Claude Code)
 
+> **SUPERSEDED — DO NOT READ.**
+>
+> This is an older copy of [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), missing the
+> Phase 3a/3b status notes and the full Phase 5 spec. For the current state of the
+> project, read [`PROJECT_STATE.md`](PROJECT_STATE.md). Kept only so old links do
+> not break.
+
 ---
 
 ## 0. What we're building

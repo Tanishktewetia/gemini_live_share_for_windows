@@ -1,6 +1,15 @@
 # Gemini Live Share — Windows App
 ## Architecture & Phased Build Plan (for building with Claude Code)
 
+> **HISTORICAL PLAN — partly out of date. For the current state of the code, read
+> [`PROJECT_STATE.md`](../PROJECT_STATE.md).**
+>
+> This is the original plan for Phases 0–5, kept for context on why things are
+> shaped the way they are. Known drift: the Phase 3b note below says sanitized
+> frames are saved to `C:\Temp\gemini-frames`; the code no longer does this.
+> Phase 6 is specified separately in [`PHASE6_BROWSER_AGENT.md`](PHASE6_BROWSER_AGENT.md),
+> and the current phase is [`PHASE7_ACCURACY_PLAN.md`](PHASE7_ACCURACY_PLAN.md).
+
 ---
 
 ## 0. What we're building
