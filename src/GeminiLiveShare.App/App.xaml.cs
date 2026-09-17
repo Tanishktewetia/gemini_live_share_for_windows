@@ -3,6 +3,7 @@ using GeminiLiveShare.App.ViewModels;
 using GeminiLiveShare.App.Views;
 using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.BrowserAgent;
+using GeminiLiveShare.Core.Diagnostics;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
@@ -39,7 +40,8 @@ public partial class App : System.Windows.Application
                 new OcrCredentialDetector(),
                 filterSettings),
             chatHistory,
-            _browserAgentBridge);
+            _browserAgentBridge,
+            new FileSessionDiagnostics());
 
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory, browserAgentBridge: _browserAgentBridge);
         MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings, _browserAgentBridge);

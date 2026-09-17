@@ -1,6 +1,7 @@
 using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.BrowserAgent;
 using GeminiLiveShare.Core.BrowserAgent.Models;
+using GeminiLiveShare.Core.Diagnostics;
 using GeminiLiveShare.Core.Storage;
 using GeminiLiveShare.Core.Vision;
 using System.Text.Json;
@@ -11,10 +12,18 @@ namespace GeminiLiveShare.Core.Gemini;
 
 public sealed class SessionOrchestrator : IAsyncDisposable
 {
-    // Two 20 ms frames cap stale microphone audio at roughly 40 ms when a video
-    // frame briefly occupies the WebSocket send lock. Fresh speech is preferable
-    // to replaying old speech after a transient transport delay.
-    private const int MicrophoneQueueCapacity = 2;
+    // Microphone chunks are 40 ms. Screen frames share the WebSocket send lock, and a frame upload measured
+    // 65-380 ms on a home connection; the previous 2-chunk (80 ms) queue discarded 11% of speech while frames
+    // uploaded, which Gemini heard as broken words. ~520 ms rides out a normal frame upload with a short delay
+    // instead of lost speech, while still bounding latency after a real network stall.
+    private const int MicrophoneQueueCapacity = 13;
+    private static readonly TimeSpan DiagnosticsSummaryInterval = TimeSpan.FromSeconds(30);
+    // Adaptive frame quality: slow uploads delay microphone audio, so shrink frames until the link recovers.
+    private static readonly TimeSpan SlowFrameUpload = TimeSpan.FromMilliseconds(400);
+    private static readonly TimeSpan FastFrameUpload = TimeSpan.FromMilliseconds(150);
+    private const int MinimumJpegQuality = 60;
+    private const int JpegQualityStep = 10;
+    private const int FastUploadsBeforeRaisingQuality = 5;
     private static readonly TimeSpan SpeakingSilenceThreshold = TimeSpan.FromMilliseconds(350);
 
     private readonly IAudioCaptureService _audioCapture;
@@ -24,6 +33,16 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private readonly IImageProcessingService _imageProcessing;
     private readonly IChatHistoryRepository _chatHistory;
     private readonly BrowserAgentBridge? _browserAgentBridge;
+    private readonly ISessionDiagnostics _diagnostics;
+    private long _micChunksCaptured;
+    private long _micChunksDropped;
+    private long _framesSent;
+    private long _framesUnchanged;
+    private long _framesDropped;
+    private long _frameBytesSent;
+    private long _frameUploadTicksTotal;
+    private long _frameUploadTicksMax;
+    private int _fastUploadStreak;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private CancellationTokenSource? _sessionCancellation;
     private CancellationTokenSource? _mediaCancellation;
@@ -37,6 +56,11 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private bool _screenShareDesired;
     private string? _apiKey;
     private bool _resettingVisualContext;
+    private int _screenShareNoticePending;
+
+    internal const string ScreenShareOnNotice =
+        "App notice (not spoken by the user): screen sharing is now ON. You are receiving screenshots of the user's " +
+        "primary monitor about once per second and may describe what they show. Briefly confirm that you can now see the screen.";
 
     public SessionOrchestrator(
         IAudioCaptureService audioCapture,
@@ -45,8 +69,11 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         IScreenCaptureService screenCapture,
         IImageProcessingService imageProcessing,
         IChatHistoryRepository chatHistory,
-        BrowserAgentBridge? browserAgentBridge = null)
+        BrowserAgentBridge? browserAgentBridge = null,
+        ISessionDiagnostics? diagnostics = null)
     {
+        _diagnostics = diagnostics ?? NullSessionDiagnostics.Instance;
+        StatusChanged += (_, status) => _diagnostics.Log($"status: {status}");
         _audioCapture = audioCapture;
         _audioPlayback = audioPlayback;
         _liveClient = liveClient;
@@ -106,6 +133,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             try
             {
                 SetConnectingState(true);
+                ResetDiagnosticsCounters();
+                _diagnostics.Log("session: starting");
                 _apiKey = apiKey;
                 _sessionId = Guid.NewGuid().ToString("N");
                 await _liveClient.ConnectAsync(apiKey, cancellationToken).ConfigureAwait(false);
@@ -116,6 +145,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 _screenShareDesired = false;
                 SetMicrophoneState(true);
                 StartMedia();
+                _ = LogDiagnosticsPeriodicallyAsync(sessionCancellation.Token);
                 StatusChanged?.Invoke(this, "Conversation started");
             }
             catch
@@ -170,6 +200,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             _sessionCancellation = null;
             _sessionId = null;
             _apiKey = null;
+            LogDiagnosticsSummary("session end");
             StatusChanged?.Invoke(this, "Conversation stopped");
         }
         finally
@@ -205,7 +236,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                     throw;
                 }
 
-                StatusChanged?.Invoke(this, "Microphone ON");
+                StatusChanged?.Invoke(this, $"Microphone ON ({DescribeEchoCancellation()})");
                 return;
             }
 
@@ -258,8 +289,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 {
                     await _liveClient.SendTextAsync(
                         "Screen sharing is now disabled. Treat all earlier screen frames as unavailable. " +
-                        "If the user asks about anything visual, say exactly: I don't see your screen right now; " +
-                        "I'm not receiving any visuals.", cancellationToken).ConfigureAwait(false);
+                        "If the user asks about anything visual, reply: " + GeminiLiveClient.NoScreenReply, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -287,8 +317,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             StartMedia();
             await _liveClient.SendTextAsync(
                 "Screen sharing is disabled. This session contains no visual input. " +
-                "If the user asks about anything visual, say exactly: I don't see your screen right now; " +
-                "I'm not receiving any visuals.", cancellationToken).ConfigureAwait(false);
+                "If the user asks about anything visual, reply: " + GeminiLiveClient.NoScreenReply, cancellationToken).ConfigureAwait(false);
             StatusChanged?.Invoke(this, "Screen share OFF; visual context cleared");
         }
         finally
@@ -327,6 +356,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
+        Interlocked.Increment(ref _micChunksCaptured);
         _microphoneAudio?.Writer.TryWrite(audio);
     }
 
@@ -499,7 +529,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             SingleWriter = true,
             FullMode = BoundedChannelFullMode.DropOldest
         };
-        Channel<byte[]> microphoneAudio = Channel.CreateBounded<byte[]>(options);
+        Channel<byte[]> microphoneAudio = Channel.CreateBounded<byte[]>(
+            options, _ => Interlocked.Increment(ref _micChunksDropped));
         _microphoneAudio = microphoneAudio;
         _microphoneSendTask = SendMicrophoneAudioAsync(microphoneAudio.Reader, cancellationToken);
     }
@@ -515,12 +546,17 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             StartMicrophoneSender(mediaToken);
             SetMicrophoneState(true);
             _audioCapture.Start();
+            StatusChanged?.Invoke(this, $"Microphone ON ({DescribeEchoCancellation()})");
         }
         if (_screenShareDesired)
         {
             StartVideoSender(mediaToken);
         }
     }
+
+    private string DescribeEchoCancellation() => _audioCapture.IsEchoCancellationActive
+        ? "echo cancellation active"
+        : "echo cancellation unavailable - use headphones";
 
     private async Task StopMediaAsync()
     {
@@ -580,6 +616,9 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         CancellationToken videoToken = _videoCancellation.Token;
         // This task is intentionally independent from capture/audio sending. JPEG work never runs on
         // the audio callback and can neither await nor apply backpressure to the microphone channel.
+        // Tell Gemini sharing is on only after a real screenshot has been sent, so it never "sees" before an image exists.
+        Interlocked.Exchange(ref _screenShareNoticePending, 1);
+        _imageProcessing.ResetChangeDetection();
         _videoTask = Task.Run(() => RunVideoSenderAsync(videoToken), videoToken);
         SetScreenShareState(true);
     }
@@ -610,9 +649,16 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
-        string? base64Jpeg = await _imageProcessing.EncodeForGeminiAsync(frame, cancellationToken).ConfigureAwait(false);
-        if (base64Jpeg is null || !_screenShareDesired)
+        FrameEncodeResult encoded = await _imageProcessing.EncodeForGeminiAsync(frame, cancellationToken).ConfigureAwait(false);
+        if (encoded.Status == FrameEncodeStatus.Unchanged)
         {
+            Interlocked.Increment(ref _framesUnchanged);
+            return;
+        }
+
+        if (encoded.Status == FrameEncodeStatus.Dropped || encoded.Base64Jpeg is null)
+        {
+            Interlocked.Increment(ref _framesDropped);
             return;
         }
 
@@ -621,7 +667,95 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
-        await _liveClient.SendVideoFrameAsync(base64Jpeg, cancellationToken).ConfigureAwait(false);
+        long uploadStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        await _liveClient.SendVideoFrameAsync(encoded.Base64Jpeg, cancellationToken).ConfigureAwait(false);
+        RecordFrameUpload(System.Diagnostics.Stopwatch.GetElapsedTime(uploadStarted), encoded.JpegBytes);
+        if (Interlocked.Exchange(ref _screenShareNoticePending, 0) == 1 && _screenShareDesired)
+        {
+            await _liveClient.SendTextAsync(ScreenShareOnNotice, cancellationToken).ConfigureAwait(false);
+            StatusChanged?.Invoke(this, "Screen share ON: first screenshot sent to Gemini");
+        }
+    }
+
+    private void RecordFrameUpload(TimeSpan upload, int jpegBytes)
+    {
+        Interlocked.Increment(ref _framesSent);
+        Interlocked.Add(ref _frameBytesSent, jpegBytes);
+        Interlocked.Add(ref _frameUploadTicksTotal, upload.Ticks);
+        long max;
+        while (upload.Ticks > (max = Interlocked.Read(ref _frameUploadTicksMax)) &&
+               Interlocked.CompareExchange(ref _frameUploadTicksMax, upload.Ticks, max) != max)
+        {
+        }
+
+        int quality = _imageProcessing.JpegQuality;
+        if (upload >= SlowFrameUpload)
+        {
+            _fastUploadStreak = 0;
+            if (quality > MinimumJpegQuality)
+            {
+                _imageProcessing.JpegQuality = Math.Max(MinimumJpegQuality, quality - JpegQualityStep);
+                _diagnostics.Log($"video: slow frame upload {upload.TotalMilliseconds:0} ms ({jpegBytes / 1024} KB); JPEG quality {quality} -> {_imageProcessing.JpegQuality}");
+            }
+        }
+        else if (upload <= FastFrameUpload)
+        {
+            if (quality < ImageProcessingService.DefaultJpegQuality && ++_fastUploadStreak >= FastUploadsBeforeRaisingQuality)
+            {
+                _fastUploadStreak = 0;
+                _imageProcessing.JpegQuality = Math.Min(ImageProcessingService.DefaultJpegQuality, quality + JpegQualityStep);
+                _diagnostics.Log($"video: uploads fast again; JPEG quality {quality} -> {_imageProcessing.JpegQuality}");
+            }
+        }
+        else
+        {
+            _fastUploadStreak = 0;
+        }
+    }
+
+    private void ResetDiagnosticsCounters()
+    {
+        Interlocked.Exchange(ref _micChunksCaptured, 0);
+        Interlocked.Exchange(ref _micChunksDropped, 0);
+        Interlocked.Exchange(ref _framesSent, 0);
+        Interlocked.Exchange(ref _framesUnchanged, 0);
+        Interlocked.Exchange(ref _framesDropped, 0);
+        Interlocked.Exchange(ref _frameBytesSent, 0);
+        Interlocked.Exchange(ref _frameUploadTicksTotal, 0);
+        Interlocked.Exchange(ref _frameUploadTicksMax, 0);
+        _fastUploadStreak = 0;
+        _imageProcessing.JpegQuality = ImageProcessingService.DefaultJpegQuality;
+    }
+
+    private async Task LogDiagnosticsPeriodicallyAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(DiagnosticsSummaryInterval, cancellationToken).ConfigureAwait(false);
+                LogDiagnosticsSummary("session so far");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private void LogDiagnosticsSummary(string label)
+    {
+        long captured = Interlocked.Read(ref _micChunksCaptured);
+        long dropped = Interlocked.Read(ref _micChunksDropped);
+        long sent = Interlocked.Read(ref _framesSent);
+        double averageUpload = sent == 0 ? 0 : TimeSpan.FromTicks(Interlocked.Read(ref _frameUploadTicksTotal) / sent).TotalMilliseconds;
+        double maxUpload = TimeSpan.FromTicks(Interlocked.Read(ref _frameUploadTicksMax)).TotalMilliseconds;
+        long averageKb = sent == 0 ? 0 : Interlocked.Read(ref _frameBytesSent) / sent / 1024;
+        double lostPercent = captured == 0 ? 0 : 100.0 * dropped / captured;
+        _diagnostics.Log(
+            $"{label}: mic chunks {captured}, lost {dropped} ({lostPercent:0.0}%), " +
+            $"echo cancellation {(_audioCapture.IsEchoCancellationActive ? "on" : "off")}; " +
+            $"frames sent {sent}, unchanged-skipped {Interlocked.Read(ref _framesUnchanged)}, dropped {Interlocked.Read(ref _framesDropped)}, " +
+            $"avg {averageKb} KB, upload avg {averageUpload:0} ms max {maxUpload:0} ms, JPEG quality {_imageProcessing.JpegQuality}");
     }
 
     private async Task StopVideoSenderAsync()
@@ -697,6 +831,13 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         try
         {
             await Task.Delay(SpeakingSilenceThreshold, cancellation.Token).ConfigureAwait(false);
+            // Gemini sends speech faster than real time, so the last chunk can arrive long before it is heard.
+            // Keep the speaking state (overlay animation) on until the queued speech has actually played.
+            while (_audioPlayback.HasQueuedAudio)
+            {
+                await Task.Delay(100, cancellation.Token).ConfigureAwait(false);
+            }
+
             if (Interlocked.CompareExchange(ref _speakingCancellation, null, cancellation) == cancellation)
             {
                 SetSpeakingState(false);

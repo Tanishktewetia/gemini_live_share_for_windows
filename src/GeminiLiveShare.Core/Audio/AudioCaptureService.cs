@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using NAudio.Wave;
 
 namespace GeminiLiveShare.Core.Audio;
@@ -8,21 +9,76 @@ public sealed class AudioCaptureService : IAudioCaptureService
     private const int BitsPerSample = 16;
     private const int Channels = 1;
 
+    private readonly object _syncRoot = new();
+    private EchoCancellingMicrophone? _echoCancellingMicrophone;
     private WaveInEvent? _waveIn;
 
     public event EventHandler<byte[]>? AudioCaptured;
 
     public event EventHandler<AudioCaptureFailedEventArgs>? CaptureFailed;
 
-    public bool IsCapturing => _waveIn is not null;
+    public bool IsCapturing => _echoCancellingMicrophone is not null || _waveIn is not null;
+
+    public bool IsEchoCancellationActive => _echoCancellingMicrophone is not null;
 
     public void Start()
     {
-        if (_waveIn is not null)
+        lock (_syncRoot)
         {
-            return;
-        }
+            if (IsCapturing)
+            {
+                return;
+            }
 
+            // Prefer Windows acoustic echo cancellation so Gemini's speaker output is not streamed back
+            // to Gemini as user speech (which makes it interrupt itself when headphones are not used).
+            EchoCancellingMicrophone microphone = new(OnEchoCancelledAudio, OnEchoCancellationFailed);
+            try
+            {
+                _echoCancellingMicrophone = microphone;
+                microphone.Start();
+                return;
+            }
+            catch (Exception ex)
+            {
+                _echoCancellingMicrophone = null;
+                microphone.Dispose();
+                Trace.WriteLine($"Echo cancellation unavailable; using raw microphone capture: {ex.Message}");
+            }
+
+            StartRawCapture();
+        }
+    }
+
+    public void Stop()
+    {
+        lock (_syncRoot)
+        {
+            EchoCancellingMicrophone? microphone = _echoCancellingMicrophone;
+            _echoCancellingMicrophone = null;
+            microphone?.Dispose();
+
+            WaveInEvent? waveIn = _waveIn;
+            _waveIn = null;
+            if (waveIn is null)
+            {
+                return;
+            }
+
+            waveIn.StopRecording();
+            waveIn.DataAvailable -= OnDataAvailable;
+            waveIn.RecordingStopped -= OnRecordingStopped;
+            waveIn.Dispose();
+        }
+    }
+
+    public void Dispose()
+    {
+        Stop();
+    }
+
+    private void StartRawCapture()
+    {
         WaveInEvent waveIn = new()
         {
             WaveFormat = new WaveFormat(InputSampleRate, BitsPerSample, Channels),
@@ -50,24 +106,31 @@ public sealed class AudioCaptureService : IAudioCaptureService
         }
     }
 
-    public void Stop()
+    private void OnEchoCancelledAudio(byte[] audio) => AudioCaptured?.Invoke(this, audio);
+
+    private void OnEchoCancellationFailed(Exception exception)
     {
-        WaveInEvent? waveIn = _waveIn;
-        _waveIn = null;
-        if (waveIn is null)
+        // Runs on the DSP thread after its loop has exited; release it without joining that thread.
+        lock (_syncRoot)
         {
-            return;
+            _echoCancellingMicrophone = null;
+            if (exception is EchoCancellationStalledException)
+            {
+                // Keep the microphone working rather than silently sending nothing.
+                Trace.WriteLine($"{exception.Message} Falling back to raw microphone capture.");
+                try
+                {
+                    StartRawCapture();
+                    return;
+                }
+                catch (Exception fallbackException)
+                {
+                    exception = fallbackException;
+                }
+            }
         }
 
-        waveIn.StopRecording();
-        waveIn.DataAvailable -= OnDataAvailable;
-        waveIn.RecordingStopped -= OnRecordingStopped;
-        waveIn.Dispose();
-    }
-
-    public void Dispose()
-    {
-        Stop();
+        CaptureFailed?.Invoke(this, new AudioCaptureFailedEventArgs(exception));
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)

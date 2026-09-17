@@ -28,7 +28,20 @@ public sealed class SetupConfiguration
 
     [JsonPropertyName("sessionResumption")]
     public SessionResumptionConfiguration SessionResumption { get; init; } = new();
+
+    // Google Search grounding runs on Google's side. Null omits tools (keys without search quota reject the setup).
+    [JsonPropertyName("tools")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ToolConfiguration[]? Tools { get; init; }
 }
+
+public sealed class ToolConfiguration
+{
+    [JsonPropertyName("googleSearch")]
+    public GoogleSearchTool GoogleSearch { get; init; } = new();
+}
+
+public sealed class GoogleSearchTool;
 
 public sealed class AudioTranscriptionConfiguration;
 

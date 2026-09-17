@@ -1,0 +1,172 @@
+# Phase Log
+
+Running record of every fix and phase verification, newest first. Each entry lists status, cause,
+implementation, files changed, verification performed, and manual test steps.
+
+## Production Hardening - Screen-share bandwidth, broken voice, web search, app naming, header title
+
+- **Date:** 2026-09-17
+- **Status:** Implemented; automated tests pass; awaiting manual test.
+- **Product goal (from the user):** a voice assistant that watches the screen and guides people, especially older users, through computer tasks. It must hear clearly, see accurately, never invent what it sees or does, and stay smooth on ordinary home internet.
+- **Reported problems:**
+  1. With screen sharing on, Gemini said the user was in "VS Code". The screen showed the Claude desktop app.
+  2. The user said "Claude"; transcripts show "Cloud" / "Cloud Code" / "Cloud Core".
+  3. Asked to search the internet for Anthropic, Gemini replied "I searched Anthropic…". No search tool existed.
+  4. Gemini's voice broke up during the conversation.
+  5. The conversation header kept an old title ("हिंदी में बातचीत") while the sidebar showed the new one.
+
+### 1. Screen frames were oversized and starved the microphone (voice breaking, misheard words)
+- **Measured locally (real capture pipeline, nothing sent):** a 1920×1080 screen was **upscaled to 2048×1152** (`MinimumOutputWidth = 2048`) and encoded at **JPEG q98**. That is **537 KB per frame (base64)**, about **4.4 Mbit/s of upload at 1 fps**, against ~0.3 Mbit/s for audio. Processing took ~105 ms per frame, which is fine on 16 CPUs. At native resolution: q98 386 KB, q92 255 KB, **q90 238 KB**, q85 202 KB, q80 178 KB (JPEG bytes).
+- **Mechanism:** frames and microphone audio share one WebSocket send lock, and one 537 KB frame holds it for its whole upload. The microphone queue held only 2 chunks (80 ms) and discarded the oldest.
+- **Measured on the live API** (text-heavy synthetic frames at realistic sizes, not the user's screen; the app's exact mic queue replayed with 40 ms chunks):
+
+  | Condition | Frame upload avg / max | Mic audio lost | Gemini voice |
+  |---|---|---|---|
+  | No screen share | – | 1.2% | smooth |
+  | Current frames (525 KB) | 232 / 382 ms | **11.1%** | smooth |
+  | Native q90 frames (315 KB) | 65 / 220 ms | **0.3%** | smooth |
+  | Native q90, during a network stall | 399 / **2254 ms** | 15.9% | **2.4 s silent** |
+
+  Losing ~11% of speech explains words being misheard. The last row shows this connection also has occasional ~2 s upload stalls, which silence Gemini's reply. The app can't prevent network stalls, but it now avoids adding to them.
+- **Fix:**
+  - `ImageProcessingService`: native resolution (never upscale; only captures wider than 2560 px are reduced), default JPEG quality 90.
+  - **Change detection:** the sanitized frame is compared with the last sent frame at 480×270 grayscale, per pixel (>8 levels, ≥2 pixels). An unchanged screen is skipped, but refreshed at least every 5 s. A single typed character counts as a change and is sent immediately. Detection resets whenever sharing (re)starts, so the first frame is always sent.
+  - **Adaptive quality** (`SessionOrchestrator.RecordFrameUpload`): an upload ≥400 ms lowers quality by 10 (floor 60); 5 consecutive uploads ≤150 ms raise it back toward 90.
+  - **Microphone queue** raised from 2 to 13 chunks (~520 ms): a normal frame upload now delays speech briefly instead of deleting it, and latency is still bounded after a real stall.
+  - `IImageProcessingService.EncodeForGeminiAsync` now returns `FrameEncodeResult` (Encoded / Unchanged / Dropped).
+- **Diagnostics log:** new `FileSessionDiagnostics` writes `%LOCALAPPDATA%\GeminiLiveShare\logs\session-yyyyMMdd.log` (keeps 14 days). It records status events plus a summary every 30 s and at session end: mic chunks captured/lost (%), echo cancellation on/off, frames sent/unchanged-skipped/dropped, average KB, upload avg/max ms, and JPEG quality changes. It never logs audio, images, transcripts or keys.
+
+### 2. Web search was never enabled, and the key has no quota for it
+- **Cause:** the Live setup declared no tools, so "I searched…" was invented.
+- **Measured:** adding `tools: [{ googleSearch: {} }]` makes the server close the setup with **"You exceeded your current quota, please check your plan and billing details"**. The identical setup without tools returns `setupComplete`. This API key has no Google Search quota for Live sessions, so unconditionally enabling search would have broken every conversation.
+- **Found while testing:** a setup rejected by the server was reported only after the **15 s setup timeout** as a generic timeout, because the receive task's error never completed the setup wait. Setup now waits for either completion or the receive task, so real errors surface immediately.
+- **Fix:** `GeminiLiveClient` requests Google Search first. On a quota rejection it reconnects immediately without tools, remembers that for the rest of the app run, and shows "Web search is not available for this API key (no quota); continuing without it". The instruction matches the capability: with search, use it for lookups; without search, never claim to have searched, say searching isn't possible, and answer from knowledge with a caveat.
+- **Verified with the real client:** first connect detected the rejection at 0.9 s and connected without search at 1.8 s; the second connect skipped search and connected in 1.3 s.
+- **Quota note:** repeated live tests in this session likely used much of this key's free allowance, so later live tests were kept to handshakes only.
+
+### 3. App identification ("VS Code") and name recognition ("Cloud")
+- **Cause:** the model guessed the app from its look (Claude's desktop app resembles an IDE). Speech recognition turns "Claude" into "Cloud".
+- **Fix (instruction):** identify apps from visible text (window/tab titles, taskbar or menu labels), not layout or colours; say so when unsure. A "names you may hear" note maps "Cloud"/"Cloud Code" said about an AI app to Claude/Claude Code by Anthropic, and tells Gemini to adopt user corrections. The recovered microphone audio (section 1) should also reduce mishearing.
+
+### 4. Conversation header showed a stale title
+- **Cause:** `MainViewModel.SessionHeader` was only refreshed when a different conversation was selected, not when the open conversation's title changed (generated early/final title or rename).
+- **Fix:** subscribe to the selected session's `HeaderText` changes.
+
+- **Files changed:** `src/GeminiLiveShare.Core/Vision/IImageProcessingService.cs`, `src/GeminiLiveShare.Core/Vision/ImageProcessingService.cs`, `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`, `src/GeminiLiveShare.Core/Gemini/GeminiLiveClient.cs`, `src/GeminiLiveShare.Core/Gemini/Models/SetupMessage.cs`, `src/GeminiLiveShare.Core/Diagnostics/SessionDiagnostics.cs` (new), `src/GeminiLiveShare.App/App.xaml.cs`, `src/GeminiLiveShare.App/ViewModels/MainViewModel.cs`, `src/GeminiLiveShare.Tests/Program.cs`.
+- **Automated verification:**
+  - New `ValidateFrameResolutionAndChangeDetectionAsync`: 1080p is sent at 1920×1080; an identical frame is skipped; an 8×14 px "typed character" is detected and sent; the first frame after a reset is sent; 4K is sent at 2560×1440; lower quality produces fewer bytes.
+  - New `ValidateWebSearchSetup`: tools are serialized only when enabled; the measured quota message is recognised and an ordinary failure is not; both instruction variants keep the screen rules and have the correct search wording.
+  - Solution builds with 0 errors; all tests pass.
+- **Manual verification (to do):**
+  1. Start a conversation, turn on screen share, and talk for 2–3 minutes while using the PC. The voice should stay clear both ways.
+  2. Open the log in `%LOCALAPPDATA%\GeminiLiveShare\logs\` and check "mic lost" is near 0%. Frames should be ~150–300 KB, with "unchanged-skipped" rising while the screen is still.
+  3. With the Claude app on screen, ask "which application is open?". Gemini should name it from visible text or say it isn't sure, not guess VS Code.
+  4. Say "Claude" in a sentence and check Gemini understands it as Claude.
+  5. Ask "search the internet for Anthropic". Status should show that web search isn't available for this key, and Gemini must say it can't search rather than claim it did.
+  6. Watch the header while a conversation gets its title. It should update together with the sidebar.
+
+## Phase 2 Fix - Gemini claims to see the screen while screen sharing is off
+
+- **Date:** 2026-09-17
+- **Status:** Implemented and verified with the live API; awaiting manual test.
+- **Reported bug:** Screen sharing was never turned on, yet when asked "what do you see on my screen?" Gemini said it was watching the desktop and described icons.
+- **Investigation:**
+  - **Transcript** (chat history DB, session titled "Counting Desktop Icons"): Gemini said "Yes, I do. I'm seeing your desktop right now", asked the user to "zoom in a bit" because labels were "blurry", then reported "a total of 25 icons", named "Chrome, Postman, Slack", and said there was no "cursor" icon.
+  - **Ground truth:** the real desktop folders contain ~57 items, **including `Cursor.lnk`** and **no Slack**. The answer was invented, not read from an image.
+  - **Pipeline audit:** screen frames can only be sent through `SessionOrchestrator.StartVideoSender`, reached only when `_screenShareDesired` is true, which is set only by the overlay's screen-share button (`OverlayWindow.OnScreenShareClick` → `SetScreenShareEnabledAsync`). `StartAsync` forces it off. No leak path exists.
+  - **Controlled reproduction:** fresh Live sessions with the real client and **zero frames sent**, asking "Do you see my screen?" and "How many icons are on my desktop?". **3 of 4 sessions claimed to see the screen**, inventing "a file explorer and a web browser", "8 desktop icons", and "a Canva restaurant template". One asked to "zoom in", matching the user's session.
+- **Cause:** a model hallucination driven by the system instruction. It introduced Gemini as "a real-time desktop vision assistant" whose "realtime video stream contains screenshots from the user's primary monitor", gave detailed icon-counting advice (including "ask for a closer screenshot", the "zoom in" line), and never stated that screen sharing starts off. The model assumed visual access and made up the content. No image was sent.
+- **Implementation:**
+  - Rewrote `GeminiLiveClient.DesktopVisionInstruction` with top-priority screen access rules. Screen sharing is OFF when the conversation starts. Gemini can see only after the app says sharing is on AND a screenshot has actually been received. It must never describe or guess windows, apps, icons, text or counts without an image. With no screenshot it gives a fixed reply (`NoScreenReply`: "I can't see your screen right now. Turn on screen sharing with the screen button on the overlay…"). The screenshot-reading and icon-counting guidance applies only when screenshots are present.
+  - `SessionOrchestrator` sends `ScreenShareOnNotice` right after the first screenshot of each sharing period has actually been sent, never before and never when the privacy filter drops frames. The status bar shows "Screen share ON: first screenshot sent to Gemini".
+  - The two screen-off messages now use the same `NoScreenReply` wording.
+- **Files changed:** `src/GeminiLiveShare.Core/Gemini/GeminiLiveClient.cs`, `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`, `src/GeminiLiveShare.Tests/Program.cs`.
+- **Automated verification:**
+  - Live API, sharing off, zero frames: **0 of 6 sessions** claimed to see the screen (before: 3 of 4). All replied honestly and pointed to the screen button.
+  - Live API, sharing on, synthetic 1920×1080 desktop with 7 labelled icons (not the user's real screen), sent through `SendVideoFrameAsync` plus the notice: Gemini replied "I can see your screen now", then "There are 7 icons…" and **named all 7 labels correctly**.
+  - New `ValidateScreenShareNoticeFollowsRealFrameAsync` test: nothing is sent before sharing is enabled; no notice when every frame is dropped; the notice immediately follows the first real frame and is sent once.
+  - Solution builds with 0 errors; the test harness passes.
+- **Doc drift noted:** `docs/ARCHITECTURE.md` (Phase 3b status) says sanitized frames are saved to `C:\Temp\gemini-frames`. The current code no longer does this (the folder is empty), so it could not be used as evidence.
+- **Manual verification (to do):**
+  1. Start a conversation without turning on screen share. Ask "what do you see on my screen?" and "how many icons are on my desktop?". Gemini must say it can't see the screen.
+  2. Click the overlay's screen button. Status should show "Screen share ON: first screenshot sent to Gemini" and Gemini should say it can now see the screen.
+  3. Ask about something visible (e.g. a window title or a desktop icon name). The answer should match the real screen.
+  4. Turn screen share off and ask again. Gemini must say it can't see the screen.
+
+## Phase 1 Fix - Scrambled / glitchy voice toward the end of Gemini's replies
+
+- **Date:** 2026-09-17
+- **Status:** Implemented and verified with the live API; awaiting manual listening test.
+- **Reported bug:** Toward the end of Gemini's speech the voice scrambles and distorts with a "technical glitch" sound. It has been seen many times; the earlier fixes (`b73b00e` odd-byte sample alignment, `6944bc6` 20 ms fade tail) addressed clicks, not this.
+- **Cause (measured):** Gemini Live sends speech much faster than real time. In a live test, a **38.7 s reply arrived in about 10.6 s** (127 chunks). `AudioPlaybackService` used NAudio `BufferedWaveProvider` with `BufferDuration = 2 s` and `DiscardOnBufferOverflow = true`. That buffer filled 0.8 s into the reply, and every later chunk that didn't fit was silently dropped. **26.0 s of the 38.7 s reply (67%) was discarded.** The remaining fragments were spliced together, which is the scrambled sound. Short replies (under ~2 s of backlog) were unaffected; long replies got progressively worse toward the end.
+- **Implementation:**
+  - Added `PcmPlaybackQueue`, an unbounded, lossless `IWaveProvider` (queue of PCM segments). It pads with silence only when empty, so the output device never stops. Latency cannot accumulate across turns, because barge-in (`interrupted`) still clears the queue.
+  - `AudioPlaybackService` now uses it. The existing odd-byte carry and end-of-turn fade are unchanged.
+  - Side effect found and fixed: `SessionOrchestrator` cleared the speaking state 350 ms after the last chunk *arrived*. With lossless playback, the overlay's speaking animation would have stopped ~30 s before long replies finished. Added `IAudioPlaybackService.HasQueuedAudio`; the speaking state now stays on until queued speech has actually played.
+- **Also confirmed:** Gemini sent `turnComplete` at 45.1 s for a 44.4 s reply (first chunk at ~0.7 s), so the server tracks real-time playback and user barge-in keeps working for the whole reply.
+- **Files changed:** `src/GeminiLiveShare.Core/Audio/PcmPlaybackQueue.cs` (new), `src/GeminiLiveShare.Core/Audio/AudioPlaybackService.cs`, `src/GeminiLiveShare.Core/Audio/IAudioPlaybackService.cs`, `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`, `src/GeminiLiveShare.Tests/Program.cs`.
+- **Automated verification:**
+  - New `ValidatePlaybackQueueIsLossless` test: 39 s of audio enqueued faster than real time is read back byte-for-byte in order, empty reads pad with silence, and `Clear` empties the queue.
+  - Live API: a 44.4 s reply fed into the new queue, **0.0 s lost** (the old buffer lost 67%).
+  - Solution builds with 0 errors; the test harness passes.
+- **Manual verification (to do):** Ask for a long answer ("tell me a detailed 1-minute story") and listen to the end: no scrambling, skips or glitch sound. The overlay animation should keep moving until the voice actually stops. Interrupt mid-story: the voice should stop promptly.
+
+## Phase 5e Fix - Conversation titles were the first spoken line
+
+- **Date:** 2026-09-17
+- **Status:** Implemented and verified with the live API; awaiting manual test.
+- **Reported bug:** Conversation titles in the sidebar are the first line the user said, not a proper title like Claude chat generates.
+- **Cause (measured):**
+  1. `GeminiTitleGenerationService` called `gemini-2.5-flash`, which now returns **HTTP 404 "no longer available to new users, use gemini-3.6-flash"**. The service swallowed the error and returned `null`, so titles were never generated.
+  2. The sidebar therefore kept `ChatSessionViewModel.CreateSummary(first user text)`, the first 40 characters of the first transcription fragment.
+  3. Even with a working model, the request used `maxOutputTokens = 20`. Thinking models (`gemini-3.6-flash`, `gemini-flash-latest`) spent ~250 tokens thinking and hit `MAX_TOKENS`.
+  4. A title was only attempted when a session was stopped from the main view model, once, and never for older conversations.
+- **Model selection (measured with this API key):** `gemini-flash-lite-latest`: 0.9–1.2 s, no thinking tokens, good titles. `gemini-3.5-flash-lite`: 0.8 s. `gemini-flash-latest`: 6.9 s, `MAX_TOKENS`. `gemini-3.6-flash`: 3.7 s, `MAX_TOKENS` by default. `gemini-3.1-flash-lite`: intermittent 503. Chose the `-latest` alias as primary (it follows Google's current model, so it won't be retired like a pinned name) with `gemini-3.5-flash-lite` as fallback on 404/429/500/503.
+- **Implementation (chat-app style titles):**
+  - The sidebar shows **"New conversation"** until a real title exists. The first spoken line is never used (`CreateSummary` removed).
+  - **Early title:** as soon as Gemini answers during a live session, a title is generated from the conversation so far. Greeting-only openings return `NONE` and are retried on the next assistant reply (up to 3 attempts).
+  - **Final title:** when the conversation stops, the title is regenerated once from the whole transcript. A version counter prevents a slow early request from overwriting the final title.
+  - **Backfill:** at startup, up to 20 existing conversations still titled "New conversation" are named in the background.
+  - User-renamed titles are never overwritten.
+  - Prompt: 2–6 words, Title Case, user's language, main goal across the whole conversation, ignore greetings/mic checks, be specific, no quotes/emoji/punctuation, `NONE` if no topic yet. Voice transcription fragments are merged into speaker turns; long sessions send the first 10 and last 20 turns.
+  - Output cleaning strips markdown, `Title:` prefixes, quotes and trailing punctuation, and caps length at 60 characters. Real API errors are now surfaced in the status bar instead of silently falling back.
+- **Files changed:** `src/GeminiLiveShare.Core/Gemini/GeminiTitleGenerationService.cs`, `src/GeminiLiveShare.App/ViewModels/MainViewModel.cs`, `src/GeminiLiveShare.App/ViewModels/ChatHistoryViewModels.cs`, `src/GeminiLiveShare.Tests/Program.cs`.
+- **Automated verification:**
+  - New `ValidateTitleFormatting` test (markdown/prefix/quote cleanup, `NONE` rejected, 60-char cap, fragment merging). It caught and fixed a bug where `**Title: ...**` kept its prefix.
+  - Live API results: greeting then trip planning gave "Budget Trip To Jaipur December"; greeting only gave no title (stays "New conversation"); topic shift gave "Junior Data Analyst Cover Letter"; Hindi recipe request gave "Dal Makhani Recipe in Hindi". All took 0.8–1.0 s.
+- **Manual verification (to do):**
+  1. Launch the app. Older "New conversation" entries should get real titles within a few seconds.
+  2. Start a conversation, say "hello, can you hear me", and after Gemini replies confirm the title is still "New conversation".
+  3. Ask something substantive. After Gemini answers, the title should change to a short topic title.
+  4. Stop the conversation. The title may be refined to reflect the whole conversation.
+  5. Rename a conversation manually, then start and stop another. The renamed title must not change.
+
+## Phase 1 Fix - Gemini interrupts itself on speakers (acoustic echo cancellation)
+
+- **Date:** 2026-09-17
+- **Status:** Implemented and verified on hardware by automated measurement; awaiting manual conversation test.
+- **Reported bug:** With headphones disconnected, Gemini keeps interrupting itself and the user cannot hold a conversation.
+- **Cause:** `AudioCaptureService` recorded the raw microphone with NAudio `WaveInEvent` (MME) and applied no echo cancellation. Gemini's voice from the speakers re-entered the microphone and was streamed back to the Live API. Gemini's server-side voice activity detection treated its own voice as user speech, sent `interrupted`, and `SessionOrchestrator.OnInterrupted` cleared playback. This was the "acoustic echo cancellation" item listed under *Phase 6 — Future Hardening* in `docs/ARCHITECTURE.md`.
+- **Implementation:**
+  - Added `EchoCancellingMicrophone`, a COM interop wrapper around the built-in Windows **Voice Capture DSP** (`CLSID_CWMAudioAEC`), the same echo canceller Windows communication apps use. It runs in source mode (`SINGLE_CHANNEL_AEC`) on a dedicated MTA thread, captures the default console microphone plus a loopback of the default console speaker (the device `WaveOutEvent` plays on), subtracts the speaker signal, and emits 16 kHz / 16-bit / mono PCM in the same 40 ms chunks as before, so the orchestrator's queue tuning is unchanged.
+  - `AudioCaptureService` now starts echo-cancelled capture first. If the DSP cannot start, it falls back to the previous raw `WaveInEvent` capture.
+  - **Stall watchdog:** the DSP only produces audio while the speaker endpoint is rendering (loopback is its echo reference). If it produces nothing for 3 seconds, capture automatically falls back to raw recording instead of silently sending no audio. During a session this should not trigger, because playback stays open (it renders silence between replies).
+  - Unplugging or changing the default device mid-session (50 consecutive DSP failures) raises `CaptureFailed`, which turns the mic off as before; turning the mic back on re-selects the current default devices.
+  - Added `IAudioCaptureService.IsEchoCancellationActive`. The session status now shows `Microphone ON (echo cancellation active)` or `Microphone ON (echo cancellation unavailable - use headphones)`.
+- **Files changed:** `src/GeminiLiveShare.Core/Audio/EchoCancellingMicrophone.cs` (new), `src/GeminiLiveShare.Core/Audio/AudioCaptureService.cs`, `src/GeminiLiveShare.Core/Audio/IAudioCaptureService.cs`, `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`, `src/GeminiLiveShare.Tests/Program.cs` (fake updated), `PHASE_LOG.md` (new).
+- **Debugging notes:**
+  - First smoke test: the DSP initialized but `ProcessOutput` returned `S_FALSE` with no data forever. The cause was that nothing was playing on the speaker. With playback open (as in a real session), it produced exactly 3000 ms of audio per 3 s in 1280-byte chunks. This finding led to the stall watchdog.
+  - Plain loudness (RMS) comparisons were dominated by room noise and inconclusive, so echo was measured instead as the least-squares amplitude of the exact played test signal found in the mic recording (best lag 0–500 ms).
+- **Automated verification (this PC: Speakers/Microphone "High Definition Audio Device", volume 100%):**
+  - Echo amplitude of a 6 s speech-band test signal played through `AudioPlaybackService`, over 3 rounds: raw mic **12.5–15.4**, echo-cancelled mic **2.6–2.9**, no-playback control 0.5–4.0. That is about an 80% (≈14 dB) echo reduction, down to the background-noise level.
+  - Start, stop, and restart of echo-cancelled capture works; start time 40–340 ms.
+  - Stall fallback: with no playback, capture switched to raw after 3 s and kept delivering audio (62,720 bytes in the remaining 2 s window).
+  - `dotnet build GeminiLiveShare.sln`: 0 errors (1 pre-existing test warning). The `GeminiLiveShare.Tests` harness passes.
+- **Manual verification (to do):**
+  1. Unplug headphones, use laptop/desktop speakers at normal volume.
+  2. Start a new conversation. The status should read `Microphone ON (echo cancellation active)`.
+  3. Ask a long question ("explain how airplanes fly in detail") and stay silent. Gemini should finish the whole answer without cutting itself off.
+  4. Interrupt mid-answer by speaking ("stop, tell me a joke"). Gemini should still stop and switch topic (barge-in must keep working).
+  5. Repeat steps 3–4 with headphones to confirm there is no regression.
+  6. Mute/unmute the mic mid-session and confirm the status message and capture resume.
+- **If interruptions still occur:** a second layer is available but not yet applied. Lower Gemini's server VAD sensitivity (`realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity = START_SENSITIVITY_LOW`) in `SetupMessage`. It was held back because it also makes genuine barge-in less sensitive.

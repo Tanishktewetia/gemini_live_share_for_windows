@@ -9,11 +9,22 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
     private const int Channels = 1;
 
     private readonly object _syncRoot = new();
-    private BufferedWaveProvider? _buffer;
+    private PcmPlaybackQueue? _buffer;
     private WaveOutEvent? _waveOut;
     private byte? _pendingSampleByte;
     private byte[] _heldTail = [];
     private const int FadeTailBytes = 960;
+
+    public bool HasQueuedAudio
+    {
+        get
+        {
+            lock (_syncRoot)
+            {
+                return _heldTail.Length > 0 || _buffer?.BufferedBytes > 0;
+            }
+        }
+    }
 
     public void Start()
     {
@@ -24,15 +35,7 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
                 return;
             }
 
-            _buffer = new BufferedWaveProvider(new WaveFormat(OutputSampleRate, BitsPerSample, Channels))
-            {
-                // Bound the amount of audio that can sit behind the speaker. If the
-                // network briefly outruns playback, BufferedWaveProvider discards the
-                // oldest samples instead of allowing conversational delay to grow.
-                BufferDuration = TimeSpan.FromSeconds(2),
-                DiscardOnBufferOverflow = true,
-                ReadFully = true
-            };
+            _buffer = new PcmPlaybackQueue(new WaveFormat(OutputSampleRate, BitsPerSample, Channels));
 
             _waveOut = new WaveOutEvent
             {
@@ -79,7 +82,7 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
                 int bytesToWrite = Math.Max(0, combined.Length - FadeTailBytes);
                 if (bytesToWrite > 0)
                 {
-                    _buffer.AddSamples(combined, 0, bytesToWrite);
+                    _buffer.Enqueue(combined, bytesToWrite);
                 }
 
                 _heldTail = combined[bytesToWrite..];
@@ -106,7 +109,7 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
                 _heldTail[offset + 1] = bytes[1];
             }
 
-            _buffer.AddSamples(_heldTail, 0, _heldTail.Length);
+            _buffer.Enqueue(_heldTail, _heldTail.Length);
             _heldTail = [];
         }
     }
@@ -115,7 +118,7 @@ public sealed class AudioPlaybackService : IAudioPlaybackService
     {
         lock (_syncRoot)
         {
-            _buffer?.ClearBuffer();
+            _buffer?.Clear();
             _pendingSampleByte = null;
             _heldTail = [];
         }

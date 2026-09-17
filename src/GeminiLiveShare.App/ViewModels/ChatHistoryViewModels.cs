@@ -43,29 +43,12 @@ public sealed partial class ChatSessionViewModel : ObservableObject
         {
             LatestMessageUtc = message.CreatedAtUtc;
         }
-
-        if (message.Role.Equals("user", StringComparison.OrdinalIgnoreCase) &&
-            !IsTitleUserEdited && Summary == "New conversation")
-        {
-            Summary = CreateSummary(message.Text);
-        }
     }
 
     public void SetTitle(string title, bool isUserEdited)
     {
         Summary = title;
         IsTitleUserEdited = isUserEdited;
-    }
-
-    public static string CreateSummary(string text)
-    {
-        string normalized = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return "New conversation";
-        }
-
-        return normalized.Length > 40 ? $"{normalized[..40]}..." : normalized;
     }
 
     private static string FormatRelativeDate(DateTime utc)

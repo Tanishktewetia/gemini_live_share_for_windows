@@ -9,12 +9,23 @@ namespace GeminiLiveShare.Core.Vision;
 
 public sealed class ImageProcessingService : IImageProcessingService
 {
-    // Keep the full monitor width for ordinary 1080p/1440p displays and only reduce
-    // very large captures. This is important because desktop labels and icon glyphs
-    // occupy very few pixels in a full-screen frame.
-    private const int TargetWidth = 3200;
-    private const int MinimumOutputWidth = 2048;
+    // Send ordinary 1080p/1440p monitors at native resolution (desktop labels occupy very few pixels) and only
+    // reduce larger captures. Frames are never upscaled: the old 2048 px minimum stretched 1920 px screens, adding
+    // bytes but no detail. Frames share the WebSocket with microphone audio, and a measured 537 KB frame (q98,
+    // upscaled) cost 11% of microphone audio versus 0.3% at native resolution q90 (317 KB).
+    private const int MaximumOutputWidth = 2560;
+    public const int DefaultJpegQuality = 90;
     private static readonly TimeSpan FrameProcessingBudget = TimeSpan.FromMilliseconds(1000);
+
+    // Unchanged screens are not re-sent every second, but are refreshed periodically so Gemini's view stays current.
+    internal static readonly TimeSpan UnchangedFrameRefreshInterval = TimeSpan.FromSeconds(5);
+    private const int ChangeThumbnailWidth = 480;
+    private const int ChangeThumbnailHeight = 270;
+    private const int ChangedPixelThreshold = 8;
+    private const int MinimumChangedPixels = 2;
+    private readonly object _changeLock = new();
+    private byte[]? _lastSentThumbnail;
+    private long _lastSentTimestamp;
 
     private readonly ICredentialBlurService _credentialBlur;
     private readonly IOcrCredentialDetector _ocrCredentialDetector;
@@ -30,7 +41,17 @@ public sealed class ImageProcessingService : IImageProcessingService
         _filterSettings = filterSettings;
     }
 
-    public async Task<string?> EncodeForGeminiAsync(
+    public int JpegQuality { get; set; } = DefaultJpegQuality;
+
+    public void ResetChangeDetection()
+    {
+        lock (_changeLock)
+        {
+            _lastSentThumbnail = null;
+        }
+    }
+
+    public async Task<FrameEncodeResult> EncodeForGeminiAsync(
         SoftwareBitmap frame,
         CancellationToken cancellationToken)
     {
@@ -73,7 +94,7 @@ public sealed class ImageProcessingService : IImageProcessingService
 
             if (!uiAutomationSucceeded || ocrBounds is null)
             {
-                return null;
+                return FrameEncodeResult.Dropped;
             }
 
             ApplyBlackBoxes(source, ocrBounds);
@@ -82,10 +103,17 @@ public sealed class ImageProcessingService : IImageProcessingService
         if (processingTime.Elapsed > FrameProcessingBudget)
         {
             Trace.WriteLine($"Frame processing exceeded {FrameProcessingBudget.TotalMilliseconds:0} ms; dropping frame.");
-            return null;
+            return FrameEncodeResult.Dropped;
         }
 
-        int outputWidth = Math.Min(TargetWidth, Math.Max(MinimumOutputWidth, source.Width));
+        // Compare the sanitized image, so a change is judged on exactly what Gemini would receive.
+        byte[] thumbnail = CreateChangeThumbnail(source);
+        if (!ShouldSend(thumbnail))
+        {
+            return FrameEncodeResult.Unchanged;
+        }
+
+        int outputWidth = Math.Min(MaximumOutputWidth, source.Width);
         SKBitmap? resized = null;
         if (outputWidth != source.Width)
         {
@@ -104,7 +132,7 @@ public sealed class ImageProcessingService : IImageProcessingService
         try
         {
             using SKImage image = SKImage.FromBitmap(output);
-            using SKData encodedImage = image.Encode(SKEncodedImageFormat.Jpeg, 98);
+            using SKData encodedImage = image.Encode(SKEncodedImageFormat.Jpeg, Math.Clamp(JpegQuality, 40, 100));
             encodedBytes = encodedImage.ToArray();
         }
         finally
@@ -115,10 +143,60 @@ public sealed class ImageProcessingService : IImageProcessingService
         if (processingTime.Elapsed > FrameProcessingBudget)
         {
             Trace.WriteLine($"Frame processing exceeded {FrameProcessingBudget.TotalMilliseconds:0} ms; dropping frame.");
-            return null;
+            return FrameEncodeResult.Dropped;
         }
 
-        return Convert.ToBase64String(encodedBytes);
+        lock (_changeLock)
+        {
+            _lastSentThumbnail = thumbnail;
+            _lastSentTimestamp = Stopwatch.GetTimestamp();
+        }
+
+        return FrameEncodeResult.Encoded(encodedBytes);
+    }
+
+    private bool ShouldSend(byte[] thumbnail)
+    {
+        lock (_changeLock)
+        {
+            if (_lastSentThumbnail is null ||
+                Stopwatch.GetElapsedTime(_lastSentTimestamp) >= UnchangedFrameRefreshInterval)
+            {
+                return true;
+            }
+
+            return HasVisibleChange(_lastSentThumbnail, thumbnail);
+        }
+    }
+
+    internal static bool HasVisibleChange(byte[] previous, byte[] current)
+    {
+        if (previous.Length != current.Length)
+        {
+            return true;
+        }
+
+        // Any small real change counts (a typed character, a moved cursor, a new tooltip), so compare pixels
+        // individually instead of an average that would hide a tiny but important update.
+        int changed = 0;
+        for (int index = 0; index < current.Length; index++)
+        {
+            if (Math.Abs(current[index] - previous[index]) > ChangedPixelThreshold && ++changed >= MinimumChangedPixels)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static byte[] CreateChangeThumbnail(SKBitmap source)
+    {
+        using SKBitmap small = source.Resize(
+            new SKImageInfo(ChangeThumbnailWidth, ChangeThumbnailHeight, SKColorType.Gray8, SKAlphaType.Opaque),
+            new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None))
+            ?? throw new InvalidOperationException("Unable to create the change-detection thumbnail.");
+        return small.Bytes;
     }
 
     private async Task<IReadOnlyList<SKRect>?> DetectOcrBoundsAsync(

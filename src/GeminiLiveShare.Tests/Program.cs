@@ -14,14 +14,19 @@ using Windows.Storage.Streams;
 ValidateMatcher();
 await ValidateSanitizationBeforeEncodingAsync();
 await ValidateDetectorFailureDropsFrameAsync();
+await ValidateFrameResolutionAndChangeDetectionAsync();
 ValidateLiveProtocol();
+ValidateWebSearchSetup();
 ValidateOutputTranscriptionAccumulation();
 ValidateReconnectPolicy();
 await ValidateChatHistoryAsync();
 await ValidateMediaPauseAndRestoreAsync();
 await ValidateSpeakingStateAsync();
+await ValidateScreenShareNoticeFollowsRealFrameAsync();
 ValidateGlobalHotkeySettings();
-Console.WriteLine("Credential filtering, Live protocol, reconnect, and chat-history validation passed.");
+ValidatePlaybackQueueIsLossless();
+ValidateTitleFormatting();
+Console.WriteLine("Credential filtering, Live protocol, reconnect, chat-history, and playback-queue validation passed.");
 
 static void ValidateMatcher()
 {
@@ -94,7 +99,7 @@ static async Task ValidateSanitizationBeforeEncodingAsync()
         new SuccessfulUiAutomationStub(),
         new FixedOcrStub(new[] { new SKRect(20, 15, 80, 45) }),
         new EnabledFilterSettings());
-    string? encoded = await service.EncodeForGeminiAsync(frame, CancellationToken.None);
+    string? encoded = (await service.EncodeForGeminiAsync(frame, CancellationToken.None)).Base64Jpeg;
     Require(encoded is not null, "sanitized frame was unexpectedly dropped");
 
     byte[] encodedBytes = Convert.FromBase64String(encoded!);
@@ -111,6 +116,107 @@ static async Task ValidateSanitizationBeforeEncodingAsync()
         "pixels outside the OCR rectangle were unexpectedly changed");
 }
 
+static async Task ValidateFrameResolutionAndChangeDetectionAsync()
+{
+    ImageProcessingService service = new(new SuccessfulUiAutomationStub(), new FixedOcrStub([]), new EnabledFilterSettings());
+
+    // 1080p is sent at native size: never upscaled (the old 2048 px minimum stretched it) and never shrunk.
+    using SoftwareBitmap desktop = CreateSolidFrame(1920, 1080, 255);
+    FrameEncodeResult first = await service.EncodeForGeminiAsync(desktop, CancellationToken.None);
+    Require(first.Status == FrameEncodeStatus.Encoded, "the first shared frame was not sent");
+    using (SKBitmap decoded = SKBitmap.Decode(Convert.FromBase64String(first.Base64Jpeg!)))
+    {
+        Require(decoded.Width == 1920 && decoded.Height == 1080, $"1080p frame was resized to {decoded.Width}x{decoded.Height}");
+    }
+
+    // An identical screen is skipped until the periodic refresh...
+    Require((await service.EncodeForGeminiAsync(desktop, CancellationToken.None)).Status == FrameEncodeStatus.Unchanged,
+        "an unchanged screen was sent again immediately");
+
+    // ...but one typed character (an 8x14 px glyph-sized change) is a real change and is sent at once.
+    byte[] thumbnailBefore = ImageProcessingService.CreateChangeThumbnail(ToSkBitmap(desktop));
+    using SoftwareBitmap typed = CreateSolidFrame(1920, 1080, 255, darkRect: (900, 500, 8, 14));
+    byte[] thumbnailAfter = ImageProcessingService.CreateChangeThumbnail(ToSkBitmap(typed));
+    Require(ImageProcessingService.HasVisibleChange(thumbnailBefore, thumbnailAfter),
+        "a single typed character was not detected as a screen change");
+    Require((await service.EncodeForGeminiAsync(typed, CancellationToken.None)).Status == FrameEncodeStatus.Encoded,
+        "a frame with a newly typed character was not sent");
+
+    // Sharing restarted: the next frame must be sent even if nothing changed.
+    service.ResetChangeDetection();
+    Require((await service.EncodeForGeminiAsync(typed, CancellationToken.None)).Status == FrameEncodeStatus.Encoded,
+        "the first frame after screen sharing restarted was not sent");
+
+    // 4K captures are reduced to 2560 px wide to bound upload size.
+    using SoftwareBitmap uhd = CreateSolidFrame(3840, 2160, 200);
+    FrameEncodeResult large = await service.EncodeForGeminiAsync(uhd, CancellationToken.None);
+    using (SKBitmap decoded = SKBitmap.Decode(Convert.FromBase64String(large.Base64Jpeg!)))
+    {
+        Require(decoded.Width == 2560 && decoded.Height == 1440, $"4K frame was sent at {decoded.Width}x{decoded.Height}");
+    }
+
+    // Lower quality (used while uploads are slow) produces a smaller frame.
+    using SoftwareBitmap busy = CreateNoiseFrame(1920, 1080);
+    service.ResetChangeDetection();
+    int highQualityBytes = (await service.EncodeForGeminiAsync(busy, CancellationToken.None)).JpegBytes;
+    service.JpegQuality = 60;
+    service.ResetChangeDetection();
+    int lowQualityBytes = (await service.EncodeForGeminiAsync(busy, CancellationToken.None)).JpegBytes;
+    Require(lowQualityBytes < highQualityBytes, "lowering JPEG quality did not reduce the frame size");
+}
+
+static SoftwareBitmap CreateSolidFrame(int width, int height, byte value, (int X, int Y, int W, int H)? darkRect = null)
+{
+    byte[] pixels = Enumerable.Repeat(value, width * height * 4).ToArray();
+    if (darkRect is { } rect)
+    {
+        for (int y = rect.Y; y < rect.Y + rect.H; y++)
+            for (int x = rect.X; x < rect.X + rect.W; x++)
+            {
+                int offset = (y * width + x) * 4;
+                pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = 20;
+            }
+    }
+
+    return CreateFrameFromPixels(width, height, pixels);
+}
+
+static SoftwareBitmap CreateNoiseFrame(int width, int height)
+{
+    byte[] pixels = new byte[width * height * 4];
+    new Random(11).NextBytes(pixels);
+    for (int offset = 3; offset < pixels.Length; offset += 4)
+    {
+        pixels[offset] = 255;
+    }
+
+    return CreateFrameFromPixels(width, height, pixels);
+}
+
+static SoftwareBitmap CreateFrameFromPixels(int width, int height, byte[] pixels)
+{
+    SoftwareBitmap frame = new(BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Premultiplied);
+    using DataWriter writer = new();
+    writer.WriteBytes(pixels);
+    frame.CopyFromBuffer(writer.DetachBuffer());
+    return frame;
+}
+
+static SKBitmap ToSkBitmap(SoftwareBitmap frame)
+{
+    byte[] pixels = new byte[frame.PixelWidth * frame.PixelHeight * 4];
+    Windows.Storage.Streams.Buffer buffer = new((uint)pixels.Length);
+    frame.CopyToBuffer(buffer);
+    using (DataReader reader = DataReader.FromBuffer(buffer))
+    {
+        reader.ReadBytes(pixels);
+    }
+
+    SKBitmap bitmap = new(frame.PixelWidth, frame.PixelHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
+    System.Runtime.InteropServices.Marshal.Copy(pixels, 0, bitmap.GetPixels(), pixels.Length);
+    return bitmap;
+}
+
 static async Task ValidateDetectorFailureDropsFrameAsync()
 {
     using SoftwareBitmap frame = new(BitmapPixelFormat.Bgra8, 10, 10, BitmapAlphaMode.Premultiplied);
@@ -119,8 +225,95 @@ static async Task ValidateDetectorFailureDropsFrameAsync()
         new FailingOcrStub(),
         new EnabledFilterSettings());
 
-    string? encoded = await service.EncodeForGeminiAsync(frame, CancellationToken.None);
+    string? encoded = (await service.EncodeForGeminiAsync(frame, CancellationToken.None)).Base64Jpeg;
     Require(encoded is null, "frame was encoded after a credential detector failed");
+}
+
+static void ValidateTitleFormatting()
+{
+    Require(GeminiTitleGenerationService.CleanTitle("**Title: \"Fixing WPF Microphone Echo.\"**\nextra") == "Fixing WPF Microphone Echo",
+        "generated title was not cleaned of markdown, prefix, quotes and trailing punctuation");
+    Require(GeminiTitleGenerationService.CleanTitle("NONE") is null, "a no-topic response was accepted as a title");
+    Require(GeminiTitleGenerationService.CleanTitle("   ") is null, "an empty response was accepted as a title");
+    Require(GeminiTitleGenerationService.CleanTitle(new string('a', 90))!.Length == 60, "title was not limited to 60 characters");
+
+    string transcript = GeminiTitleGenerationService.BuildTranscript([
+        new ChatMessage { Role = "user", Text = "can you" },
+        new ChatMessage { Role = "user", Text = "hear me" },
+        new ChatMessage { Role = "assistant", Text = "Yes." },
+        new ChatMessage { Role = "user", Text = "  " }]);
+    Require(transcript == "User: can you hear me\nAssistant: Yes.",
+        "voice transcription fragments were not merged into speaker turns");
+}
+
+static void ValidatePlaybackQueueIsLossless()
+{
+    // Gemini delivered a 38.7 s reply in ~10.6 s; the old 2 s discard-on-overflow buffer lost 67% of it.
+    PcmPlaybackQueue queue = new(new NAudio.Wave.WaveFormat(24_000, 16, 1));
+    const int replyBytes = 48_000 * 39;
+    byte[] expected = new byte[replyBytes];
+    new Random(7).NextBytes(expected);
+    for (int offset = 0; offset < replyBytes; offset += 3_840)
+    {
+        int count = Math.Min(3_840, replyBytes - offset);
+        queue.Enqueue(expected[offset..(offset + count)], count);
+    }
+
+    Require(queue.BufferedBytes == replyBytes, "playback queue discarded audio that arrived faster than real time");
+    byte[] actual = new byte[replyBytes];
+    for (int offset = 0; offset < replyBytes; offset += 4_800)
+    {
+        queue.Read(actual, offset, Math.Min(4_800, replyBytes - offset));
+    }
+
+    Require(actual.AsSpan().SequenceEqual(expected), "playback queue changed or reordered audio samples");
+    byte[] silence = Enumerable.Repeat((byte)0xFF, 1_000).ToArray();
+    Require(queue.Read(silence, 0, silence.Length) == silence.Length && silence.All(value => value == 0),
+        "an empty playback queue did not pad the output with silence");
+    queue.Enqueue(new byte[4_800], 4_800);
+    queue.Clear();
+    Require(queue.BufferedBytes == 0, "clearing the playback queue (barge-in) left audio queued");
+}
+
+static void ValidateWebSearchSetup()
+{
+    SetupMessage withSearch = new()
+    {
+        Setup = new SetupConfiguration
+        {
+            Model = "models/test",
+            GenerationConfig = new AudioGenerationConfiguration(),
+            Tools = [new ToolConfiguration()]
+        }
+    };
+    using (JsonDocument json = JsonDocument.Parse(JsonSerializer.Serialize(withSearch)))
+    {
+        Require(json.RootElement.GetProperty("setup").GetProperty("tools")[0].TryGetProperty("googleSearch", out _),
+            "Google Search was not serialized as a Live API tool");
+    }
+
+    SetupMessage withoutSearch = new() { Setup = new SetupConfiguration { Model = "models/test", GenerationConfig = new AudioGenerationConfiguration() } };
+    using (JsonDocument json = JsonDocument.Parse(JsonSerializer.Serialize(withoutSearch)))
+    {
+        Require(!json.RootElement.GetProperty("setup").TryGetProperty("tools", out _),
+            "tools were sent although web search is unavailable");
+    }
+
+    // Measured close reason for a key without Google Search quota in Live sessions.
+    Require(GeminiLiveClient.IsQuotaRejection(new InvalidOperationException(
+        "Gemini Live API server closed the connection (InternalServerError): You exceeded your current quota, please check your plan")),
+        "the search quota rejection was not recognised");
+    Require(!GeminiLiveClient.IsQuotaRejection(new InvalidOperationException("The Gemini Live API WebSocket connection failed.")),
+        "an ordinary connection failure was treated as a quota rejection");
+
+    string searchInstruction = GeminiLiveClient.BuildInstruction(webSearchAvailable: true);
+    string noSearchInstruction = GeminiLiveClient.BuildInstruction(webSearchAvailable: false);
+    Require(searchInstruction.Contains("You can use Google Search", StringComparison.Ordinal),
+        "the instruction did not tell Gemini it can search");
+    Require(noSearchInstruction.Contains("Never say you searched", StringComparison.Ordinal),
+        "without search, the instruction did not forbid claiming to have searched");
+    Require(noSearchInstruction.Contains("Screen sharing is OFF when the conversation starts", StringComparison.Ordinal),
+        "the screen access rules were lost from the instruction");
 }
 
 static void ValidateLiveProtocol()
@@ -327,6 +520,38 @@ static async Task ValidateMediaPauseAndRestoreAsync()
     await orchestrator.StopAsync();
 }
 
+static async Task ValidateScreenShareNoticeFollowsRealFrameAsync()
+{
+    // Gemini hallucinated a desktop when told (or led to assume) it could see the screen without any image.
+    // The "screen sharing is on" notice must only follow a screenshot that was really sent.
+    FakeLiveClient droppedClient = new();
+    await using (SessionOrchestrator dropped = new(new FakeAudioCapture(), new FakeAudioPlayback(), droppedClient,
+        new FrameProducingScreenCapture(3), new FakeImageProcessing(), new FakeChatHistory()))
+    {
+        await dropped.StartAsync("test-key");
+        Require(droppedClient.SentInOrder.Count == 0, "a frame or screen notice was sent before screen sharing was enabled");
+        await dropped.SetScreenShareEnabledAsync(true);
+        await Task.Delay(300);
+        Require(droppedClient.SentInOrder.Count == 0,
+            "the screen-sharing notice was sent although every frame was dropped by the privacy filter");
+        await dropped.StopAsync();
+    }
+
+    FakeLiveClient client = new();
+    await using SessionOrchestrator orchestrator = new(new FakeAudioCapture(), new FakeAudioPlayback(), client,
+        new FrameProducingScreenCapture(3), new EncodingImageProcessing(), new FakeChatHistory());
+    await orchestrator.StartAsync("test-key");
+    await orchestrator.SetScreenShareEnabledAsync(true);
+    await WaitUntilAsync(() => client.SentInOrder.Count >= 4, "screen frames were not sent after enabling screen share");
+    string[] sent;
+    lock (client.SentInOrder) sent = client.SentInOrder.ToArray();
+    Require(sent[0] == "frame" && sent[1] == SessionOrchestrator.ScreenShareOnNotice,
+        "the screen-sharing notice did not immediately follow the first real frame");
+    Require(sent.Count(item => item == SessionOrchestrator.ScreenShareOnNotice) == 1,
+        "the screen-sharing notice was repeated for later frames");
+    await orchestrator.StopAsync();
+}
+
 static async Task ValidateSpeakingStateAsync()
 {
     FakeLiveClient client = new();
@@ -403,6 +628,7 @@ file sealed class FakeAudioCapture : IAudioCaptureService
     public event EventHandler<byte[]>? AudioCaptured { add { } remove { } }
     public event EventHandler<AudioCaptureFailedEventArgs>? CaptureFailed { add { } remove { } }
     public bool IsCapturing { get; private set; }
+    public bool IsEchoCancellationActive => false;
     public void Start() => IsCapturing = true;
     public void Stop() => IsCapturing = false;
     public void Dispose() { }
@@ -410,6 +636,7 @@ file sealed class FakeAudioCapture : IAudioCaptureService
 
 file sealed class FakeAudioPlayback : IAudioPlaybackService
 {
+    public bool HasQueuedAudio => false;
     public void Start() { }
     public void Play(byte[] pcmAudio) { }
     public void CompleteResponse() { }
@@ -437,9 +664,15 @@ file sealed class FakeLiveClient : IGeminiLiveClient
     }
 
     public Task SendAudioAsync(byte[] pcmAudio, CancellationToken cancellationToken = default) => Task.CompletedTask;
-    public Task SendVideoFrameAsync(string base64Jpeg, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public List<string> SentInOrder { get; } = [];
+    public Task SendVideoFrameAsync(string base64Jpeg, CancellationToken cancellationToken = default)
+    {
+        lock (SentInOrder) SentInOrder.Add("frame");
+        return Task.CompletedTask;
+    }
     public Task SendTextAsync(string text, CancellationToken cancellationToken = default)
     {
+        lock (SentInOrder) SentInOrder.Add(text);
         TextInputs.Add(text);
         return Task.CompletedTask;
     }
@@ -477,10 +710,38 @@ file sealed class FakeScreenCapture : IScreenCaptureService
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
+file sealed class FrameProducingScreenCapture(int frames) : IScreenCaptureService
+{
+    public async Task RunAsync(
+        Func<SoftwareBitmap, CancellationToken, Task> frameHandler,
+        CancellationToken cancellationToken)
+    {
+        for (int i = 0; i < frames; i++)
+        {
+            using SoftwareBitmap frame = new(BitmapPixelFormat.Bgra8, 4, 4, BitmapAlphaMode.Premultiplied);
+            await frameHandler(frame, cancellationToken);
+        }
+
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+file sealed class EncodingImageProcessing : IImageProcessingService
+{
+    public int JpegQuality { get; set; } = 90;
+    public void ResetChangeDetection() { }
+    public Task<FrameEncodeResult> EncodeForGeminiAsync(SoftwareBitmap frame, CancellationToken cancellationToken) =>
+        Task.FromResult(FrameEncodeResult.Encoded([0xFF, 0xD8, 0xFF]));
+}
+
 file sealed class FakeImageProcessing : IImageProcessingService
 {
-    public Task<string?> EncodeForGeminiAsync(SoftwareBitmap frame, CancellationToken cancellationToken) =>
-        Task.FromResult<string?>(null);
+    public int JpegQuality { get; set; } = 90;
+    public void ResetChangeDetection() { }
+    public Task<FrameEncodeResult> EncodeForGeminiAsync(SoftwareBitmap frame, CancellationToken cancellationToken) =>
+        Task.FromResult(FrameEncodeResult.Dropped);
 }
 
 file sealed class FakeChatHistory : IChatHistoryRepository

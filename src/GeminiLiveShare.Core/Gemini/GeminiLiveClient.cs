@@ -18,24 +18,45 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
     private Task? _supervisorTask;
     private string? _resumptionHandle;
     private volatile bool _isConnected;
+    // Google Search grounding is attempted first. Some API keys/plans have no quota for it and the server closes the
+    // setup with "You exceeded your current quota" even though plain Live sessions work (measured 2026-09-17), so the
+    // client falls back to a session without search for the rest of the app run.
+    private static volatile bool s_webSearchUnavailable;
 
-    private const string DesktopVisionInstruction =
-        "You are GeminiLiveShare, a real-time desktop vision assistant. " +
-        "The realtime video stream contains screenshots from the user's primary monitor only. " +
-        "When the user asks about the screen, inspect the newest available screenshot before answering. " +
-        "If no screenshot has been sent in the current session, you have no visual access and must not claim to see the desktop. " +
-        "Browser page context is available only after an explicit user request such as 'look at this page' or 'what fields are on this form'. " +
-        "When browser page context is supplied, use only its URL, title, and fields; never invent missing values. " +
-        "Password fields are omitted, and button fields are controls rather than fillable text fields. " +
-        "For text, read the relevant area carefully and preserve exact spelling, capitalization, and numbers; " +
-        "do not guess text that is not legible. For icons, identify the visible icon and its label or location. " +
-        "When asked to count desktop icons, scan the complete desktop systematically from top to bottom and left to right, " +
-        "use the icon tile labels and glyphs rather than guessing from wallpaper, count each visible icon tile once, " +
-        "and exclude the taskbar, this overlay, window chrome, and wallpaper. If the screenshot resolution is insufficient, " +
-        "say that the count is uncertain and ask for a closer screenshot rather than inventing a number. " +
-        "Report the total and mention any item that is ambiguous instead of inventing a count. " +
-        "A text message saying screen sharing is disabled is authoritative: there are no current visuals, " +
-        "so say exactly, 'I don't see your screen right now; I'm not receiving any visuals.'";
+    internal const string NoScreenReply =
+        "I can't see your screen right now. Turn on screen sharing with the screen button on the overlay if you'd like me to look.";
+
+    // Screen sharing is OFF when every session starts. Earlier wording described a constant screenshot stream plus
+    // icon-counting advice, and with zero frames sent the model claimed to see the desktop in 3 of 4 test sessions
+    // (inventing windows, apps and icon counts). Visual access is therefore stated as conditional, and the app sends
+    // an explicit notice once the first screenshot has actually been sent (SessionOrchestrator.ScreenShareOnNotice).
+    internal static string BuildInstruction(bool webSearchAvailable) => DesktopVisionInstruction + "\n\n" +
+        (webSearchAvailable
+            ? "WEB SEARCH:\n- You can use Google Search. Use it when the user asks you to look something up or when a question " +
+              "needs current or factual information about products, companies or websites. Base your answer on the results."
+            : "WEB SEARCH:\n- You cannot search the internet in this session. Never say you searched or looked something up. " +
+              "If asked to search, say you can't search the internet right now and answer from your own knowledge, saying it may be out of date.") +
+        "\n\nNAMES YOU MAY HEAR:\n- Speech recognition often mishears product names. \"Cloud\" or \"Cloud Code\" said about an AI app " +
+        "usually means Claude or Claude Code, made by Anthropic. If the user corrects a name, use their correction from then on.";
+
+    internal const string DesktopVisionInstruction =
+        "You are GeminiLiveShare, a voice assistant running on the user's Windows PC.\n\n" +
+        "SCREEN ACCESS RULES (highest priority):\n" +
+        "- Screen sharing is OFF when the conversation starts. While it is off you cannot see anything on the user's computer.\n" +
+        "- You can see the screen only after the app tells you screen sharing is on AND you have actually received a screenshot image in this conversation.\n" +
+        "- Never pretend or assume you can see the screen. Never describe, guess or invent windows, apps, websites, icons, text or counts you have not received in an image.\n" +
+        "- If the user asks about their screen and you have no screenshot, reply: '" + NoScreenReply + "'\n" +
+        "- A message saying screen sharing is disabled is authoritative: from then on you have no visuals, even if you saw screenshots earlier.\n\n" +
+        "WHEN SCREENSHOTS ARE PRESENT (the images show the user's primary monitor):\n" +
+        "- Answer from the newest screenshot. Read text carefully and keep exact spelling, capitalization and numbers; say so if something is not legible instead of guessing.\n" +
+        "- Identify an application from visible text (window title, tab title, taskbar or menu labels), not from its layout or colours; " +
+        "many apps look alike (for example Claude and VS Code). If no visible text names it, say you are not sure which app it is.\n" +
+        "- For icons, use their visible labels and positions. To count desktop icons, scan top to bottom and left to right, count each icon once, " +
+        "exclude the taskbar, this app's overlay, window chrome and wallpaper, and say the count is uncertain if the image is not clear enough.\n\n" +
+        "BROWSER PAGE CONTEXT:\n" +
+        "- Browser page details are available only after an explicit user request such as 'look at this page' or 'what fields are on this form'.\n" +
+        "- When supplied, use only the given URL, title and fields; never invent missing values. Password fields are omitted, " +
+        "and button fields are controls rather than fillable text fields.";
 
     public event EventHandler<byte[]>? AudioReceived;
     public event EventHandler? TurnCompleted;
@@ -247,6 +268,25 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
 
     private async Task<ClientWebSocket> ConnectSocketAsync(string apiKey, string? resumptionHandle, CancellationToken cancellationToken)
     {
+        bool webSearch = !s_webSearchUnavailable;
+        try
+        {
+            return await ConnectSocketAsync(apiKey, resumptionHandle, webSearch, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (webSearch && IsQuotaRejection(ex) && !cancellationToken.IsCancellationRequested)
+        {
+            s_webSearchUnavailable = true;
+            StatusChanged?.Invoke(this, "Web search is not available for this API key (no quota); continuing without it");
+            return await ConnectSocketAsync(apiKey, resumptionHandle, false, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    internal static bool IsQuotaRejection(Exception exception) =>
+        exception.Message.Contains("exceeded your current quota", StringComparison.OrdinalIgnoreCase) ||
+        exception.Message.Contains("RESOURCE_EXHAUSTED", StringComparison.OrdinalIgnoreCase);
+
+    private async Task<ClientWebSocket> ConnectSocketAsync(string apiKey, string? resumptionHandle, bool webSearch, CancellationToken cancellationToken)
+    {
         ClientWebSocket socket = new();
         try
         {
@@ -264,15 +304,19 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                     GenerationConfig = new AudioGenerationConfiguration(),
                     SystemInstruction = new InstructionContent
                     {
-                        Parts = [new InstructionPart { Text = DesktopVisionInstruction }]
+                        Parts = [new InstructionPart { Text = BuildInstruction(webSearch) }]
                     },
-                    SessionResumption = new SessionResumptionConfiguration { Handle = resumptionHandle }
+                    SessionResumption = new SessionResumptionConfiguration { Handle = resumptionHandle },
+                    Tools = webSearch ? [new ToolConfiguration()] : null
                 }
             }, cancellationToken).ConfigureAwait(false);
             StatusChanged?.Invoke(this, "Gemini Live setup sent; awaiting server confirmation");
             Task receiveSetup = ReceiveUntilSetupAsync(socket, setupCompleted, cancellationToken);
-            await setupCompleted.Task.WaitAsync(SetupTimeout, cancellationToken).ConfigureAwait(false);
+            // A server close during setup (e.g. a quota rejection) fails receiveSetup without completing setupCompleted;
+            // surface that real error immediately instead of waiting for the 15 s timeout.
+            await Task.WhenAny(setupCompleted.Task, receiveSetup).WaitAsync(SetupTimeout, cancellationToken).ConfigureAwait(false);
             await receiveSetup.ConfigureAwait(false);
+            await setupCompleted.Task.ConfigureAwait(false);
             return socket;
         }
         catch

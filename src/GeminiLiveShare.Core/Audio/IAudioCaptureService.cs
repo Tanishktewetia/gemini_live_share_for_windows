@@ -8,6 +8,8 @@ public interface IAudioCaptureService : IDisposable
 
     bool IsCapturing { get; }
 
+    bool IsEchoCancellationActive { get; }
+
     void Start();
 
     void Stop();
