@@ -149,6 +149,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 SetConnectingState(true);
                 ResetDiagnosticsCounters();
                 _diagnostics.Log("session: starting");
+                _diagnostics.Log($"diagnostics: save-sent-frames {(_diagnosticsSettings.SaveSentFrames ? "on" : "off")}; path {_diagnosticsSettings.SentFramesDirectory}");
                 _apiKey = apiKey;
                 _sessionId = Guid.NewGuid().ToString("N");
                 _isWebSearchAvailable = true;
@@ -977,3 +978,5 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         SpeakingStateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
+
+

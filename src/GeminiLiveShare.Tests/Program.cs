@@ -24,6 +24,8 @@ await ValidateChatHistoryAsync();
 await ValidateMediaPauseAndRestoreAsync();
 await ValidateSpeakingStateAsync();
 await ValidateScreenShareNoticeFollowsRealFrameAsync();
+await ValidateReconnectContextRestoreAsync();
+await ValidateSentFrameDiagnosticsAsync();
 ValidateGlobalHotkeySettings();
 ValidatePlaybackQueueIsLossless();
 ValidateTitleFormatting();
@@ -841,3 +843,5 @@ file sealed class FakeChatHistory : IChatHistoryRepository
     public Task DeleteSessionAsync(string sessionId) => Task.CompletedTask;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
+
+

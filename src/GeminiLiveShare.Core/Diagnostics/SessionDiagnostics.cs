@@ -36,11 +36,11 @@ public sealed class FileSessionDiagnostics : ISessionDiagnostics
     private readonly object _writeLock = new();
     private readonly string _directory;
 
-    public FileSessionDiagnostics(string? directory = null)
+    public FileSessionDiagnostics(string? directory = null, string? sentFramesDirectory = null)
     {
         _directory = directory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GeminiLiveShare", "logs");
-        SentFramesDirectory = Path.Combine(_directory, "sent-frames");
+        SentFramesDirectory = sentFramesDirectory ?? Path.Combine(_directory, "sent-frames");
         try
         {
             Directory.CreateDirectory(_directory);

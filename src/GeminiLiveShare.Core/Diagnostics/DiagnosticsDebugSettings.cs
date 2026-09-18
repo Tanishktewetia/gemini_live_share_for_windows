@@ -21,7 +21,8 @@ public sealed class DiagnosticsDebugSettings : IDiagnosticsDebugSettings
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "GeminiLiveShare");
         _settingsPath = settingsPath ?? Path.Combine(rootDirectory, "diagnostics-settings.json");
-        SentFramesDirectory = sentFramesDirectory ?? Path.Combine(rootDirectory, "Diagnostics", "sent-frames");
+        // Keep this path aligned with FileSessionDiagnostics so the Settings screen always points to the real output.
+        SentFramesDirectory = sentFramesDirectory ?? Path.Combine(rootDirectory, "logs", "sent-frames");
         Load();
     }
 

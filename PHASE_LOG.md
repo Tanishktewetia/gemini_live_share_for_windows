@@ -7,6 +7,27 @@ implementation, files changed, verification performed, and manual test steps.
 > [`PROJECT_STATE.md`](PROJECT_STATE.md). Open this file when you need the measurements and
 > reasoning behind a past fix.
 
+## Phase 7a follow-up - frame path alignment + message timestamps
+
+- **Date:** 2026-09-18
+- **Status:** Implemented; build and tests pass.
+- **Why:** Manual run showed confusion about missing saved frames and difficulty quantifying perceived latency from chat bubbles.
+- **Changes:**
+  - Aligned diagnostics frame output path between settings and writer: both now use `%LOCALAPPDATA%\GeminiLiveShare\logs\sent-frames`.
+  - `FileSessionDiagnostics` now accepts an explicit `sentFramesDirectory`; app wires it from `DiagnosticsDebugSettings`.
+  - Added session-start log line for frame-capture setting and active path (`save-sent-frames on/off`).
+  - Added per-message timestamps in chat UI (`h:mm:ss tt`) so response delay is visible directly in conversation history.
+- **Files changed:**
+  - `src/GeminiLiveShare.Core/Diagnostics/DiagnosticsDebugSettings.cs`
+  - `src/GeminiLiveShare.Core/Diagnostics/SessionDiagnostics.cs`
+  - `src/GeminiLiveShare.App/App.xaml.cs`
+  - `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`
+  - `src/GeminiLiveShare.App/ViewModels/ChatHistoryViewModels.cs`
+  - `src/GeminiLiveShare.App/Views/MainWindow.xaml`
+  - `src/GeminiLiveShare.Tests/Program.cs`
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln` ✅
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` ✅
 ## Phase 7a/7b - Diagnostics visibility + reconnect context restore
 
 - **Date:** 2026-09-18
@@ -231,4 +252,5 @@ implementation, files changed, verification performed, and manual test steps.
   5. Repeat steps 3–4 with headphones to confirm there is no regression.
   6. Mute/unmute the mic mid-session and confirm the status message and capture resume.
 - **If interruptions still occur:** a second layer is available but not yet applied. Lower Gemini's server VAD sensitivity (`realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity = START_SENSITIVITY_LOW`) in `SetupMessage`. It was held back because it also makes genuine barge-in less sensitive.
+
 

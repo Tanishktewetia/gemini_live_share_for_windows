@@ -71,4 +71,8 @@ public sealed class ChatMessageViewModel(ChatMessage message)
     public string Text { get; } = message.Text;
 
     public bool IsUser { get; } = message.Role.Equals("user", StringComparison.OrdinalIgnoreCase);
+
+    public DateTime CreatedAtLocal { get; } = message.CreatedAtUtc.ToLocalTime();
+
+    public string TimeLabel { get; } = message.CreatedAtUtc.ToLocalTime().ToString("h:mm:ss tt");
 }
