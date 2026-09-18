@@ -1,6 +1,7 @@
 using System.Text.Json;
 using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.Gemini;
+using GeminiLiveShare.Core.Diagnostics;
 using GeminiLiveShare.Core.Gemini.Models;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
@@ -579,6 +580,59 @@ static async Task ValidateSpeakingStateAsync()
     Require(!orchestrator.IsSpeaking, "stopping the session did not clear speaking state");
 }
 
+static async Task ValidateReconnectContextRestoreAsync()
+{
+    FakeLiveClient client = new();
+    SeededChatHistory history = new([
+        new ChatMessage { SessionId = "active", Role = "user", Text = "please continue helping me", CreatedAtUtc = DateTime.UtcNow.AddSeconds(-2) },
+        new ChatMessage { SessionId = "active", Role = "assistant", Text = "sure, we were changing the wifi setting", CreatedAtUtc = DateTime.UtcNow.AddSeconds(-1) }
+    ]);
+    await using SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(), new FakeAudioPlayback(), client, new FakeScreenCapture(),
+        new FakeImageProcessing(), history);
+
+    await orchestrator.StartAsync("test-key");
+    client.AnnounceSessionReady(isReconnect: true, attemptedResumption: true, wasSessionResumed: false, isWebSearchAvailable: true);
+    client.SetAvailable(false);
+    client.SetAvailable(true);
+    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("connection recovered with a fresh Gemini session", StringComparison.Ordinal)),
+        "reconnect context was not restored after resumption failed");
+    await orchestrator.StopAsync();
+}
+
+static async Task ValidateSentFrameDiagnosticsAsync()
+{
+    string root = Path.Combine(Path.GetTempPath(), $"GeminiLiveShare.Tests.Frames.{Guid.NewGuid():N}");
+    try
+    {
+        FileSessionDiagnostics diagnostics = new(root);
+        DiagnosticsDebugSettings diagnosticsSettings = new(
+            settingsPath: Path.Combine(root, "diagnostics-settings.json"),
+            sentFramesDirectory: Path.Combine(root, "frames"));
+        diagnosticsSettings.SaveSentFrames = true;
+        FakeLiveClient client = new();
+
+        await using SessionOrchestrator orchestrator = new(
+            new FakeAudioCapture(), new FakeAudioPlayback(), client,
+            new FrameProducingScreenCapture(1), new EncodingImageProcessing(), new FakeChatHistory(),
+            diagnostics: diagnostics,
+            diagnosticsSettings: diagnosticsSettings);
+
+        await orchestrator.StartAsync("test-key");
+        await orchestrator.SetScreenShareEnabledAsync(true);
+        await WaitUntilAsync(() => Directory.Exists(diagnostics.SentFramesDirectory) &&
+            Directory.EnumerateFiles(diagnostics.SentFramesDirectory, "*.jpg", SearchOption.AllDirectories).Any(),
+            "sent JPEG diagnostics were not written while debug frame capture was enabled");
+        await orchestrator.StopAsync();
+    }
+    finally
+    {
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, true);
+        }
+    }
+}
 static async Task WaitUntilAsync(Func<bool> condition, string failureMessage)
 {
     for (int attempt = 0; attempt < 100; attempt++)
@@ -653,6 +707,7 @@ file sealed class FakeLiveClient : IGeminiLiveClient
     public event EventHandler<string>? StatusChanged { add { } remove { } }
     public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived { add { } remove { } }
     public event EventHandler<ConnectionAvailabilityChangedEventArgs>? ConnectionAvailabilityChanged;
+    public event EventHandler<SessionReadyEventArgs>? SessionReady;
     public bool IsConnected { get; private set; }
     public List<string> TextInputs { get; } = [];
 
@@ -683,6 +738,9 @@ file sealed class FakeLiveClient : IGeminiLiveClient
         return Task.CompletedTask;
     }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    public void AnnounceSessionReady(bool isReconnect, bool attemptedResumption, bool wasSessionResumed, bool isWebSearchAvailable) =>
+        SessionReady?.Invoke(this, new SessionReadyEventArgs(isReconnect, attemptedResumption, wasSessionResumed, isWebSearchAvailable));
 
     public void SetAvailable(bool available)
     {
@@ -744,6 +802,31 @@ file sealed class FakeImageProcessing : IImageProcessingService
         Task.FromResult(FrameEncodeResult.Dropped);
 }
 
+file sealed class SeededChatHistory(IReadOnlyList<ChatMessage> messages) : IChatHistoryRepository
+{
+    public event EventHandler<ChatMessageAddedEventArgs>? MessageAdded;
+
+    public Task AddAsync(ChatMessage message)
+    {
+        MessageAdded?.Invoke(this, new ChatMessageAddedEventArgs(message));
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<ChatMessage>> GetBySessionAsync(string sessionId) =>
+        Task.FromResult<IReadOnlyList<ChatMessage>>(messages);
+
+    public Task<IReadOnlyList<ChatMessage>> GetAllAsync() =>
+        Task.FromResult<IReadOnlyList<ChatMessage>>(messages);
+
+    public Task<IReadOnlyList<ChatSessionMetadata>> GetSessionMetadataAsync() =>
+        Task.FromResult<IReadOnlyList<ChatSessionMetadata>>(Array.Empty<ChatSessionMetadata>());
+
+    public Task SetSessionTitleAsync(string sessionId, string title, bool isUserEdited) => Task.CompletedTask;
+
+    public Task DeleteSessionAsync(string sessionId) => Task.CompletedTask;
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
 file sealed class FakeChatHistory : IChatHistoryRepository
 {
     public event EventHandler<ChatMessageAddedEventArgs>? MessageAdded { add { } remove { } }

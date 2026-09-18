@@ -34,6 +34,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty, NotifyPropertyChangedFor(nameof(SessionHeader))]
     private ChatSessionViewModel? _selectedSession;
     [ObservableProperty] private bool _hasMessages;
+    [ObservableProperty] private bool _showWebSearchUnavailable;
+    [ObservableProperty] private bool _showReconnected;
 
     public MainViewModel(
         SessionOrchestrator orchestrator,
@@ -49,6 +51,7 @@ public partial class MainViewModel : ObservableObject
         _uiContext = SynchronizationContext.Current ?? new SynchronizationContext();
         _orchestrator.StatusChanged += OnStatusChanged;
         _orchestrator.MicrophoneStateChanged += OnMicrophoneStateChanged;
+        _orchestrator.ConnectionStateChanged += OnConnectionStateChanged;
         _history.MessageAdded += OnMessageAdded;
         if (browserAgentBridge is not null)
         {
@@ -256,6 +259,7 @@ public partial class MainViewModel : ObservableObject
         IsRunning = true;
         IsMicrophoneOn = _orchestrator.IsMicrophoneOn;
         ConnectionStatus = "Connected";
+        RefreshConnectionBadges();
     }
 
     private async Task StopAsync()
@@ -264,6 +268,7 @@ public partial class MainViewModel : ObservableObject
         IsRunning = false;
         IsMicrophoneOn = false;
         ConnectionStatus = "Disconnected";
+        RefreshConnectionBadges();
         string? liveSessionId = _liveSessionId;
         _liveSessionId = null;
         ChatSessionViewModel? session = Sessions.FirstOrDefault(item => item.SessionId == liveSessionId);
@@ -291,8 +296,14 @@ public partial class MainViewModel : ObservableObject
         ToggleMicrophoneCommand.NotifyCanExecuteChanged();
     }
 
-    private void OnStatusChanged(object? sender, string status) => _uiContext.Post(_ => ConnectionStatus = status, null);
+    private void OnStatusChanged(object? sender, string status) => _uiContext.Post(_ =>
+    {
+        ConnectionStatus = status;
+        RefreshConnectionBadges();
+    }, null);
     private void OnBrowserAgentStatusChanged(object? sender, string status) => _uiContext.Post(_ => ConnectionStatus = status, null);
+
+    private void OnConnectionStateChanged(object? sender, EventArgs e) => _uiContext.Post(_ => RefreshConnectionBadges(), null);
     private void OnMicrophoneStateChanged(object? sender, EventArgs e) => _uiContext.Post(_ =>
     {
         IsMicrophoneOn = _orchestrator.IsMicrophoneOn;
@@ -300,6 +311,11 @@ public partial class MainViewModel : ObservableObject
     }, null);
     private void OnMessageAdded(object? sender, ChatMessageAddedEventArgs e) => _uiContext.Post(_ => AddLiveMessage(e.Message), null);
 
+    private void RefreshConnectionBadges()
+    {
+        ShowWebSearchUnavailable = IsRunning && !_orchestrator.IsWebSearchAvailable;
+        ShowReconnected = IsRunning && _orchestrator.HasReconnected;
+    }
     private void AddLiveMessage(ChatMessage message)
     {
         ChatSessionViewModel? session = Sessions.FirstOrDefault(item => item.SessionId == message.SessionId);

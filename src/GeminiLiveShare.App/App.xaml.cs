@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using GeminiLiveShare.App.ViewModels;
 using GeminiLiveShare.App.Views;
 using GeminiLiveShare.Core.Audio;
@@ -27,6 +27,7 @@ public partial class App : System.Windows.Application
         ApiKeyVaultService apiKeyVault = new();
         SensitiveContentFilterSettings filterSettings = new();
         OverlayAppearanceSettings overlaySettings = new();
+        DiagnosticsDebugSettings diagnosticsSettings = new();
         ChatHistoryRepository chatHistory = new();
         _browserAgentBridge = new BrowserAgentBridge();
         _browserAgentBridge.Start();
@@ -44,7 +45,7 @@ public partial class App : System.Windows.Application
             new FileSessionDiagnostics());
 
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory, browserAgentBridge: _browserAgentBridge);
-        MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings, _browserAgentBridge);
+        MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings, diagnosticsSettings, _browserAgentBridge);
         MainWindow = window;
         window.Show();
     }

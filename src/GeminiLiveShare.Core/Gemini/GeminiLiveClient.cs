@@ -64,6 +64,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
     public event EventHandler<string>? StatusChanged;
     public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived;
     public event EventHandler<ConnectionAvailabilityChangedEventArgs>? ConnectionAvailabilityChanged;
+    public event EventHandler<SessionReadyEventArgs>? SessionReady;
     public bool IsConnected => _isConnected;
 
     public async Task ConnectAsync(string apiKey, CancellationToken cancellationToken = default)
@@ -218,14 +219,26 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             string? attemptedHandle = _resumptionHandle;
             ClientWebSocket? socket = null;
             bool setupSucceeded = false;
+            bool isReconnect = connectedOnce;
             try
             {
-                socket = await ConnectSocketAsync(apiKey, attemptedHandle, cancellationToken).ConfigureAwait(false);
+                SocketSetupResult setup = await ConnectSocketAsync(apiKey, attemptedHandle, cancellationToken).ConfigureAwait(false);
+                socket = setup.Socket;
                 setupSucceeded = true;
                 connectedOnce = true;
                 retryIndex = 0;
+                bool attemptedResumption = !string.IsNullOrWhiteSpace(attemptedHandle);
+                bool resumedSession = attemptedResumption;
+                string connectedLabel = isReconnect ? "Reconnected" : "Connected";
+                StatusChanged?.Invoke(this, connectedLabel);
+                StatusChanged?.Invoke(this,
+                    $"{connectedLabel}: session {(resumedSession ? "resumed" : "fresh")}, web search {(setup.WebSearchEnabled ? "ON" : "OFF")}");
                 SetConnectionAvailability(true);
-                StatusChanged?.Invoke(this, initialConnection.Task.IsCompleted ? "Reconnected" : "Connected");
+                SessionReady?.Invoke(this, new SessionReadyEventArgs(
+                    isReconnect,
+                    attemptedResumption,
+                    resumedSession,
+                    setup.WebSearchEnabled));
                 initialConnection.TrySetResult();
                 await ReceiveUntilDisconnectedAsync(socket, cancellationToken).ConfigureAwait(false);
             }
@@ -266,7 +279,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         }
     }
 
-    private async Task<ClientWebSocket> ConnectSocketAsync(string apiKey, string? resumptionHandle, CancellationToken cancellationToken)
+    private async Task<SocketSetupResult> ConnectSocketAsync(string apiKey, string? resumptionHandle, CancellationToken cancellationToken)
     {
         bool webSearch = !s_webSearchUnavailable;
         try
@@ -285,7 +298,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         exception.Message.Contains("exceeded your current quota", StringComparison.OrdinalIgnoreCase) ||
         exception.Message.Contains("RESOURCE_EXHAUSTED", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<ClientWebSocket> ConnectSocketAsync(string apiKey, string? resumptionHandle, bool webSearch, CancellationToken cancellationToken)
+    private async Task<SocketSetupResult> ConnectSocketAsync(string apiKey, string? resumptionHandle, bool webSearch, CancellationToken cancellationToken)
     {
         ClientWebSocket socket = new();
         try
@@ -310,14 +323,15 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                     Tools = webSearch ? [new ToolConfiguration()] : null
                 }
             }, cancellationToken).ConfigureAwait(false);
-            StatusChanged?.Invoke(this, "Gemini Live setup sent; awaiting server confirmation");
+            StatusChanged?.Invoke(this,
+                $"Gemini Live setup sent (resumption handle {(string.IsNullOrWhiteSpace(resumptionHandle) ? "none" : "present")}, web search {(webSearch ? "ON" : "OFF")}); awaiting server confirmation");
             Task receiveSetup = ReceiveUntilSetupAsync(socket, setupCompleted, cancellationToken);
             // A server close during setup (e.g. a quota rejection) fails receiveSetup without completing setupCompleted;
             // surface that real error immediately instead of waiting for the 15 s timeout.
             await Task.WhenAny(setupCompleted.Task, receiveSetup).WaitAsync(SetupTimeout, cancellationToken).ConfigureAwait(false);
             await receiveSetup.ConfigureAwait(false);
             await setupCompleted.Task.ConfigureAwait(false);
-            return socket;
+            return new SocketSetupResult(socket, webSearch);
         }
         catch
         {
@@ -493,6 +507,8 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         {
         }
     }
+
+    private sealed record SocketSetupResult(ClientWebSocket Socket, bool WebSearchEnabled);
 
     private static TaskCompletionSource NewCompletionSource() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 

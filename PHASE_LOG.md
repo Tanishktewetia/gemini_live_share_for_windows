@@ -7,6 +7,42 @@ implementation, files changed, verification performed, and manual test steps.
 > [`PROJECT_STATE.md`](PROJECT_STATE.md). Open this file when you need the measurements and
 > reasoning behind a past fix.
 
+## Phase 7a/7b - Diagnostics visibility + reconnect context restore
+
+- **Date:** 2026-09-18
+- **Status:** Implemented; build and test harness pass.
+- **Goal:** Make reconnect/search failures visible in logs and UI (7a), and stop conversation context loss when reconnect falls back to a fresh Live session (7b).
+- **Implementation:**
+  - Added structured reconnect/session-setup telemetry in `GeminiLiveClient` and surfaced it via new `SessionReady` event (`SessionReadyEventArgs`): reconnect vs first connect, resumption attempted/succeeded, and web-search on/off.
+  - `SessionOrchestrator` now logs every setup/reconnect state and tracks `IsWebSearchAvailable` / `HasReconnected` for the UI.
+  - Added reconnect context restoration via `ConversationStateRebuilder`: when resumption is rejected and a fresh session is created, it sends a compact "continue this conversation" notice with recent turns plus current screen-share state and optional browser-page context.
+  - Added debug diagnostics setting `SaveSentFrames` (`DiagnosticsDebugSettings`) and frame persistence in `FileSessionDiagnostics.SaveSentFrame(...)`; saved JPEGs are post-filter frames exactly as sent to Gemini.
+  - Added UI indicators in the main header: **Web search unavailable** and **Reconnected**.
+  - Added settings toggle under Diagnostics to enable/disable frame capture and show save path.
+- **Files changed:**
+  - `src/GeminiLiveShare.Core/Gemini/GeminiLiveClient.cs`
+  - `src/GeminiLiveShare.Core/Gemini/IGeminiLiveClient.cs`
+  - `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`
+  - `src/GeminiLiveShare.Core/Gemini/ConversationStateRebuilder.cs` (new)
+  - `src/GeminiLiveShare.Core/Gemini/SessionReadyEventArgs.cs` (new)
+  - `src/GeminiLiveShare.Core/Diagnostics/SessionDiagnostics.cs`
+  - `src/GeminiLiveShare.Core/Diagnostics/DiagnosticsDebugSettings.cs` (new)
+  - `src/GeminiLiveShare.App/ViewModels/MainViewModel.cs`
+  - `src/GeminiLiveShare.App/ViewModels/SettingsViewModel.cs`
+  - `src/GeminiLiveShare.App/Views/MainWindow.xaml`
+  - `src/GeminiLiveShare.App/Views/MainWindow.xaml.cs`
+  - `src/GeminiLiveShare.App/App.xaml.cs`
+  - `src/GeminiLiveShare.Tests/Program.cs`
+- **Automated verification:**
+  - `dotnet build GeminiLiveShare.sln` ✅
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` ✅
+  - New tests:
+    - `ValidateReconnectContextRestoreAsync` (fresh-session reconnect restores recent context)
+    - `ValidateSentFrameDiagnosticsAsync` (debug frame capture writes sent JPEGs)
+- **Manual verification (to run):**
+  1. Start conversation, disconnect network briefly, reconnect; verify status shows **Reconnected** and Gemini continues without a fresh greeting.
+  2. If Live search quota is unavailable, verify header shows **Web search unavailable**.
+  3. Enable "Save sent screen frames (debug)" and confirm JPEGs appear under the shown diagnostics path while sharing is on.
 ## Diagnosis - Invented screen details, no web search (2026-09-17/18)
 
 - **Status:** Diagnosed from real sessions and the diagnostics log. Fixes planned as Phase 7, not yet implemented.
@@ -195,3 +231,4 @@ implementation, files changed, verification performed, and manual test steps.
   5. Repeat steps 3–4 with headphones to confirm there is no regression.
   6. Mute/unmute the mic mid-session and confirm the status message and capture resume.
 - **If interruptions still occur:** a second layer is available but not yet applied. Lower Gemini's server VAD sensitivity (`realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity = START_SENSITIVITY_LOW`) in `SetupMessage`. It was held back because it also makes genuine barge-in less sensitive.
+

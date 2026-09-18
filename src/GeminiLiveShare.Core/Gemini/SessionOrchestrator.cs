@@ -34,6 +34,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private readonly IChatHistoryRepository _chatHistory;
     private readonly BrowserAgentBridge? _browserAgentBridge;
     private readonly ISessionDiagnostics _diagnostics;
+    private readonly IDiagnosticsDebugSettings _diagnosticsSettings;
+    private readonly ConversationStateRebuilder _conversationStateRebuilder;
     private long _micChunksCaptured;
     private long _micChunksDropped;
     private long _framesSent;
@@ -57,6 +59,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private string? _apiKey;
     private bool _resettingVisualContext;
     private int _screenShareNoticePending;
+    private int _restoreConversationStatePending;
+    private bool _isWebSearchAvailable = true;
+    private bool _hasReconnected;
+    private bool _browserPageContextAttached;
 
     internal const string ScreenShareOnNotice =
         "App notice (not spoken by the user): screen sharing is now ON. You are receiving screenshots of the user's " +
@@ -70,9 +76,12 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         IImageProcessingService imageProcessing,
         IChatHistoryRepository chatHistory,
         BrowserAgentBridge? browserAgentBridge = null,
-        ISessionDiagnostics? diagnostics = null)
+        ISessionDiagnostics? diagnostics = null,
+        IDiagnosticsDebugSettings? diagnosticsSettings = null)
     {
         _diagnostics = diagnostics ?? NullSessionDiagnostics.Instance;
+        _diagnosticsSettings = diagnosticsSettings ?? new DiagnosticsDebugSettings();
+        _conversationStateRebuilder = new ConversationStateRebuilder(chatHistory, browserAgentBridge);
         StatusChanged += (_, status) => _diagnostics.Log($"status: {status}");
         _audioCapture = audioCapture;
         _audioPlayback = audioPlayback;
@@ -88,6 +97,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _liveClient.StatusChanged += OnClientStatusChanged;
         _liveClient.TranscriptionReceived += OnTranscriptionReceived;
         _liveClient.ConnectionAvailabilityChanged += OnConnectionAvailabilityChanged;
+        _liveClient.SessionReady += OnSessionReady;
         if (_browserAgentBridge is not null)
         {
             _browserAgentBridge.EventReceived += OnBrowserAgentEventReceived;
@@ -119,6 +129,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     public bool IsConnecting { get; private set; }
 
+    public bool IsWebSearchAvailable => _isWebSearchAvailable;
+
+    public bool HasReconnected => _hasReconnected;
+
     public async Task StartAsync(string apiKey, CancellationToken cancellationToken = default)
     {
         await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -137,6 +151,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 _diagnostics.Log("session: starting");
                 _apiKey = apiKey;
                 _sessionId = Guid.NewGuid().ToString("N");
+                _isWebSearchAvailable = true;
+                _hasReconnected = false;
+                _browserPageContextAttached = false;
+                Interlocked.Exchange(ref _restoreConversationStatePending, 0);
                 await _liveClient.ConnectAsync(apiKey, cancellationToken).ConfigureAwait(false);
                 _audioPlayback.Start();
                 _sessionCancellation = sessionCancellation;
@@ -200,6 +218,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             _sessionCancellation = null;
             _sessionId = null;
             _apiKey = null;
+            _isWebSearchAvailable = true;
+            _hasReconnected = false;
+            _browserPageContextAttached = false;
+            Interlocked.Exchange(ref _restoreConversationStatePending, 0);
             LogDiagnosticsSummary("session end");
             StatusChanged?.Invoke(this, "Conversation stopped");
         }
@@ -337,6 +359,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _liveClient.StatusChanged -= OnClientStatusChanged;
         _liveClient.TranscriptionReceived -= OnTranscriptionReceived;
         _liveClient.ConnectionAvailabilityChanged -= OnConnectionAvailabilityChanged;
+        _liveClient.SessionReady -= OnSessionReady;
         if (_browserAgentBridge is not null)
         {
             _browserAgentBridge.EventReceived -= OnBrowserAgentEventReceived;
@@ -459,6 +482,26 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             normalized.Contains("tell me what fields are on it", StringComparison.Ordinal);
     }
 
+    private void OnSessionReady(object? sender, SessionReadyEventArgs e)
+    {
+        _isWebSearchAvailable = e.IsWebSearchAvailable;
+        if (e.IsReconnect)
+        {
+            _hasReconnected = true;
+            if (!e.WasSessionResumed)
+            {
+                Interlocked.Exchange(ref _restoreConversationStatePending, 1);
+                _diagnostics.Log("reconnect: resumed=no; scheduling conversation context restore");
+            }
+            else
+            {
+                _diagnostics.Log("reconnect: resumed=yes; context restore not needed");
+            }
+        }
+
+        _diagnostics.Log($"session setup: reconnect={(e.IsReconnect ? "yes" : "no")}, resumptionAttempt={(e.AttemptedResumption ? "yes" : "no")}, resumed={(e.WasSessionResumed ? "yes" : "no")}, web-search={(e.IsWebSearchAvailable ? "on" : "off")}");
+        ConnectionStateChanged?.Invoke(this, EventArgs.Empty);
+    }
     private async void OnConnectionAvailabilityChanged(object? sender, ConnectionAvailabilityChangedEventArgs e)
     {
         ConnectionStateChanged?.Invoke(this, EventArgs.Empty);
@@ -492,6 +535,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             }
 
             StartMedia();
+            if (Interlocked.Exchange(ref _restoreConversationStatePending, 0) == 1)
+            {
+                await RestoreConversationStateAfterReconnectAsync().ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {
@@ -670,6 +717,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         long uploadStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         await _liveClient.SendVideoFrameAsync(encoded.Base64Jpeg, cancellationToken).ConfigureAwait(false);
         RecordFrameUpload(System.Diagnostics.Stopwatch.GetElapsedTime(uploadStarted), encoded.JpegBytes);
+        SaveSentFrameForDiagnostics(encoded);
         if (Interlocked.Exchange(ref _screenShareNoticePending, 0) == 1 && _screenShareDesired)
         {
             await _liveClient.SendTextAsync(ScreenShareOnNotice, cancellationToken).ConfigureAwait(false);
@@ -677,6 +725,64 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         }
     }
 
+    private void SaveSentFrameForDiagnostics(FrameEncodeResult encoded)
+    {
+        if (!_diagnosticsSettings.SaveSentFrames || encoded.Base64Jpeg is null)
+        {
+            return;
+        }
+
+        string? sessionId = _sessionId;
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return;
+        }
+
+        try
+        {
+            byte[] jpeg = Convert.FromBase64String(encoded.Base64Jpeg);
+            long frameNumber = Interlocked.Read(ref _framesSent);
+            _diagnostics.SaveSentFrame(sessionId, frameNumber, jpeg);
+        }
+        catch (Exception ex)
+        {
+            _diagnostics.Log($"diagnostics: unable to save sent frame: {ex.Message}");
+        }
+    }
+
+    private async Task RestoreConversationStateAfterReconnectAsync()
+    {
+        string? sessionId = _sessionId;
+        if (string.IsNullOrWhiteSpace(sessionId) || !_liveClient.IsConnected)
+        {
+            return;
+        }
+
+        try
+        {
+            string? context = await _conversationStateRebuilder
+                .BuildReconnectContextAsync(
+                    sessionId,
+                    _screenShareDesired,
+                    _browserPageContextAttached,
+                    _sessionCancellation?.Token ?? CancellationToken.None)
+                .ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(context))
+            {
+                _diagnostics.Log("reconnect: no prior context to restore");
+                return;
+            }
+
+            await _liveClient.SendTextAsync(context, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+            StatusChanged?.Invoke(this, "Reconnected: restored recent conversation context");
+            _diagnostics.Log("reconnect: restored recent conversation context");
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke(this, $"Reconnected but could not restore context: {ex.Message}");
+            _diagnostics.Log($"reconnect: context restore failed: {ex.Message}");
+        }
+    }
     private void RecordFrameUpload(TimeSpan upload, int jpegBytes)
     {
         Interlocked.Increment(ref _framesSent);

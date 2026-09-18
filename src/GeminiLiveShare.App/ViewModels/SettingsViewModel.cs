@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using GeminiLiveShare.Core.Diagnostics;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
 
@@ -8,6 +9,7 @@ public partial class SettingsViewModel : ObservableObject
 {
     private readonly IApiKeyVaultService _apiKeyVault;
     private readonly ISensitiveContentFilterSettings _filterSettings;
+    private readonly IDiagnosticsDebugSettings _diagnosticsSettings;
     private readonly OverlayAppearanceSettings _overlaySettings;
 
     [ObservableProperty]
@@ -17,17 +19,23 @@ public partial class SettingsViewModel : ObservableObject
     private bool _isSensitiveContentFilteringEnabled;
 
     [ObservableProperty]
+    private bool _saveSentFramesForDiagnostics;
+
+    [ObservableProperty]
     private bool _isOverlayDark;
 
     public SettingsViewModel(
         IApiKeyVaultService apiKeyVault,
         ISensitiveContentFilterSettings filterSettings,
+        IDiagnosticsDebugSettings diagnosticsSettings,
         OverlayAppearanceSettings? overlaySettings = null)
     {
         _apiKeyVault = apiKeyVault;
         _filterSettings = filterSettings;
+        _diagnosticsSettings = diagnosticsSettings;
         _overlaySettings = overlaySettings ?? new OverlayAppearanceSettings();
         _isSensitiveContentFilteringEnabled = filterSettings.IsEnabled;
+        _saveSentFramesForDiagnostics = diagnosticsSettings.SaveSentFrames;
         _isOverlayDark = _overlaySettings.Theme == OverlayTheme.Dark;
     }
 
@@ -51,6 +59,8 @@ public partial class SettingsViewModel : ObservableObject
         _ => "Top center"
     };
 
+    public string SentFramesDirectory => _diagnosticsSettings.SentFramesDirectory;
+
     partial void OnIsSensitiveContentFilteringEnabledChanged(bool value)
     {
         try
@@ -62,6 +72,23 @@ public partial class SettingsViewModel : ObservableObject
             _isSensitiveContentFilteringEnabled = _filterSettings.IsEnabled;
             OnPropertyChanged(nameof(IsSensitiveContentFilteringEnabled));
             StatusMessage = $"Could not save the filtering setting: {ex.Message}";
+        }
+    }
+
+    partial void OnSaveSentFramesForDiagnosticsChanged(bool value)
+    {
+        try
+        {
+            _diagnosticsSettings.SaveSentFrames = value;
+            StatusMessage = value
+                ? "Debug frame capture enabled. Sanitized JPEGs will be saved while screen sharing is on."
+                : "Debug frame capture disabled.";
+        }
+        catch (Exception ex)
+        {
+            _saveSentFramesForDiagnostics = _diagnosticsSettings.SaveSentFrames;
+            OnPropertyChanged(nameof(SaveSentFramesForDiagnostics));
+            StatusMessage = $"Could not save diagnostics setting: {ex.Message}";
         }
     }
 

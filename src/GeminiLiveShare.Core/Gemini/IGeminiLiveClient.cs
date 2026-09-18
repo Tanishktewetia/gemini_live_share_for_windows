@@ -14,6 +14,8 @@ public interface IGeminiLiveClient : IAsyncDisposable
 
     event EventHandler<ConnectionAvailabilityChangedEventArgs>? ConnectionAvailabilityChanged;
 
+    event EventHandler<SessionReadyEventArgs>? SessionReady;
+
     bool IsConnected { get; }
 
     Task ConnectAsync(string apiKey, CancellationToken cancellationToken = default);
@@ -28,3 +30,4 @@ public interface IGeminiLiveClient : IAsyncDisposable
 
     Task DisconnectAsync(CancellationToken cancellationToken = default);
 }
+

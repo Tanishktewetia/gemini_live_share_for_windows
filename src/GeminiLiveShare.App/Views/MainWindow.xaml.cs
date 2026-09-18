@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Input;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -10,6 +10,7 @@ using GeminiLiveShare.Core.Security;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.BrowserAgent;
+using GeminiLiveShare.Core.Diagnostics;
 
 namespace GeminiLiveShare.App.Views;
 public partial class MainWindow : Window
@@ -18,6 +19,7 @@ public partial class MainWindow : Window
     private readonly ISensitiveContentFilterSettings _filterSettings;
     private readonly SessionOrchestrator _sessionOrchestrator;
     private readonly OverlayAppearanceSettings _overlaySettings;
+    private readonly IDiagnosticsDebugSettings _diagnosticsSettings;
     private readonly BrowserAgentBridge _browserAgentBridge;
     private readonly MainViewModel _viewModel;
     public SettingsViewModel SettingsViewModel { get; }
@@ -38,6 +40,7 @@ public partial class MainWindow : Window
         ISensitiveContentFilterSettings filterSettings,
         SessionOrchestrator sessionOrchestrator,
         OverlayAppearanceSettings overlaySettings,
+        IDiagnosticsDebugSettings diagnosticsSettings,
         BrowserAgentBridge browserAgentBridge)
     {
         _viewModel = viewModel;
@@ -45,8 +48,9 @@ public partial class MainWindow : Window
         _filterSettings = filterSettings;
         _sessionOrchestrator = sessionOrchestrator;
         _overlaySettings = overlaySettings;
+        _diagnosticsSettings = diagnosticsSettings;
         _browserAgentBridge = browserAgentBridge;
-        SettingsViewModel = new SettingsViewModel(_apiKeyVault, _filterSettings, _overlaySettings);
+        SettingsViewModel = new SettingsViewModel(_apiKeyVault, _filterSettings, _diagnosticsSettings, _overlaySettings);
         _settingsHotkeyConfiguration = new GlobalHotkeySettings().Load();
         InitializeComponent();
         DataContext = viewModel;
