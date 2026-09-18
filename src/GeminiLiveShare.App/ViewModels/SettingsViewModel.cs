@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using System.IO;
 using GeminiLiveShare.Core.Diagnostics;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
@@ -60,6 +61,13 @@ public partial class SettingsViewModel : ObservableObject
     };
 
     public string SentFramesDirectory => _diagnosticsSettings.SentFramesDirectory;
+
+    public string LogsDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "GeminiLiveShare",
+        "logs");
+
+    public string TodaySessionLogPath => Path.Combine(LogsDirectory, $"session-{DateTime.Now:yyyyMMdd}.log");
 
     partial void OnIsSensitiveContentFilteringEnabledChanged(bool value)
     {
@@ -143,3 +151,5 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(OverlayPositionSummary));
     }
 }
+
+

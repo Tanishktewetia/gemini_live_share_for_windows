@@ -7,6 +7,28 @@ implementation, files changed, verification performed, and manual test steps.
 > [`PROJECT_STATE.md`](PROJECT_STATE.md). Open this file when you need the measurements and
 > reasoning behind a past fix.
 
+## Phase 7a settings UX follow-up - diagnostics toggle and direct log paths
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and test harness pass.
+- **Request:** In Settings, let users toggle image/frame saving on/off and provide direct access to log/frame paths.
+- **Implementation:**
+  - Diagnostics card now includes:
+    - `Save sent screen frames (debug)` toggle (on/off persists locally)
+    - Displayed frames folder path
+    - **Open Frames Folder** button
+    - Displayed logs folder path and today's session log path
+    - **Open Logs Folder** and **Open Today's Log** buttons
+  - App now passes the same configured frames path into `FileSessionDiagnostics` to keep writer path aligned with the settings path.
+  - Opening paths creates missing folders (and an empty today-log file if needed), then launches with the OS shell.
+- **Files changed:**
+  - `src/GeminiLiveShare.App/Views/MainWindow.xaml`
+  - `src/GeminiLiveShare.App/Views/MainWindow.xaml.cs`
+  - `src/GeminiLiveShare.App/ViewModels/SettingsViewModel.cs`
+  - `src/GeminiLiveShare.App/App.xaml.cs`
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln` ✅
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` ✅
 ## Phase 7a follow-up - frame path alignment + message timestamps
 
 - **Date:** 2026-09-18
@@ -252,5 +274,6 @@ implementation, files changed, verification performed, and manual test steps.
   5. Repeat steps 3–4 with headphones to confirm there is no regression.
   6. Mute/unmute the mic mid-session and confirm the status message and capture resume.
 - **If interruptions still occur:** a second layer is available but not yet applied. Lower Gemini's server VAD sensitivity (`realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity = START_SENSITIVITY_LOW`) in `SetupMessage`. It was held back because it also makes genuine barge-in less sensitive.
+
 
 

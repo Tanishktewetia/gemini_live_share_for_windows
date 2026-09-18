@@ -42,7 +42,7 @@ public partial class App : System.Windows.Application
                 filterSettings),
             chatHistory,
             _browserAgentBridge,
-            new FileSessionDiagnostics());
+            new FileSessionDiagnostics(sentFramesDirectory: diagnosticsSettings.SentFramesDirectory));
 
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory, browserAgentBridge: _browserAgentBridge);
         MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings, diagnosticsSettings, _browserAgentBridge);
@@ -65,4 +65,3 @@ public partial class App : System.Windows.Application
         base.OnExit(e);
     }
 }
-

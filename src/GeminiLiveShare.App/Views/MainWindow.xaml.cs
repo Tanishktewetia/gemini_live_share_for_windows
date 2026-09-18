@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Controls;
@@ -268,6 +270,50 @@ public partial class MainWindow : Window
         DarkThemeButton.IsChecked = SettingsViewModel.IsOverlayDark;
     }
 
+    private void OnOpenFramesFolderClick(object sender, RoutedEventArgs e)
+    {
+        OpenPath(SettingsViewModel.SentFramesDirectory, "frames folder");
+    }
+
+    private void OnOpenLogsFolderClick(object sender, RoutedEventArgs e)
+    {
+        OpenPath(SettingsViewModel.LogsDirectory, "logs folder");
+    }
+
+    private void OnOpenTodayLogClick(object sender, RoutedEventArgs e)
+    {
+        OpenPath(SettingsViewModel.TodaySessionLogPath, "today's session log");
+    }
+
+    private void OpenPath(string path, string label)
+    {
+        try
+        {
+            string target = path;
+            if (Path.HasExtension(path))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                if (!File.Exists(path))
+                {
+                    File.WriteAllText(path, string.Empty);
+                }
+            }
+            else
+            {
+                Directory.CreateDirectory(path);
+            }
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = target,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            SettingsViewModel.StatusMessage = $"Could not open {label}: {ex.Message}";
+        }
+    }
     private void OnResetPositionClick(object sender, RoutedEventArgs e)
     {
         SettingsViewModel.ResetOverlayPosition();
@@ -541,3 +587,6 @@ public partial class MainWindow : Window
         }
     }
 }
+
+
+
