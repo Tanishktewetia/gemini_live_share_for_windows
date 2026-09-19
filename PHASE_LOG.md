@@ -7,6 +7,32 @@ implementation, files changed, verification performed, and manual test steps.
 > [`PROJECT_STATE.md`](PROJECT_STATE.md). Open this file when you need the measurements and
 > reasoning behind a past fix.
 
+## Phase 7c - system instruction hardening (never guess + tool-first + date/model context)
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and test harness pass.
+- **Goal:** Reduce invented visual answers by making instruction rules explicit for ambiguity-heavy tasks.
+- **Implementation:**
+  - Updated GeminiLiveClient.BuildInstruction(...) to include a **Session Context** header with:
+    - Active model name (models/gemini-3.1-flash-live-preview)
+    - User-local instruction build date (yyyy-MM-dd) and UTC offset
+    - Guidance to use that date for relative terms (today/tomorrow/yesterday)
+  - Tightened DesktopVisionInstruction with a new **Accuracy and reliability rules** section:
+    - "Never guess" baseline rule
+    - Tool-first requirement for pointer location, counting, small-text reading, and icon/control identification
+    - Explicit fallback: if no tool fits, say it cannot see clearly instead of inventing
+    - Clarification rule: ask user to point with the mouse when the on-screen target is unclear
+  - Extended tests (ValidateWebSearchSetup) with assertions for:
+    - never-guess wording
+    - tool-first wording
+    - mouse-point clarification wording
+    - model/date context using a fixed timestamp
+- **Files changed:**
+  - src/GeminiLiveShare.Core/Gemini/GeminiLiveClient.cs
+  - src/GeminiLiveShare.Tests/Program.cs
+- **Verification:**
+  - dotnet build GeminiLiveShare.sln (pass)
+  - dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj (pass)
 ## Phase 7a settings UX follow-up - diagnostics toggle and direct log paths
 
 - **Date:** 2026-09-19
@@ -274,6 +300,7 @@ implementation, files changed, verification performed, and manual test steps.
   5. Repeat steps 3–4 with headphones to confirm there is no regression.
   6. Mute/unmute the mic mid-session and confirm the status message and capture resume.
 - **If interruptions still occur:** a second layer is available but not yet applied. Lower Gemini's server VAD sensitivity (`realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity = START_SENSITIVITY_LOW`) in `SetupMessage`. It was held back because it also makes genuine barge-in less sensitive.
+
 
 
 
