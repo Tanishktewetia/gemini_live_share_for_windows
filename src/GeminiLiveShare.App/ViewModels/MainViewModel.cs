@@ -31,7 +31,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _connectionStatus = "Disconnected";
     [ObservableProperty] private bool _isMicrophoneOn;
-    [ObservableProperty, NotifyPropertyChangedFor(nameof(SessionHeader))]
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(SessionHeader)), NotifyPropertyChangedFor(nameof(HasSelectedSession))]
     private ChatSessionViewModel? _selectedSession;
     [ObservableProperty] private bool _hasMessages;
     [ObservableProperty] private bool _showWebSearchUnavailable;
@@ -62,6 +62,7 @@ public partial class MainViewModel : ObservableObject
 
     public ObservableCollection<ChatSessionViewModel> Sessions { get; } = [];
     public ObservableCollection<ChatMessageViewModel> Messages { get; } = [];
+    public bool HasSelectedSession => SelectedSession is not null;
     public string StartStopLabel => IsRunning ? "Stop Conversation" : "Start Conversation";
     public string SessionHeader => SelectedSession?.HeaderText ?? "No conversation selected";
     public event EventHandler? SettingsRequested;
@@ -144,6 +145,12 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand] private void OpenSettings() => SettingsRequested?.Invoke(this, EventArgs.Empty);
     [RelayCommand] private void RequestDelete(ChatSessionViewModel session) => session.IsDeleteConfirmationOpen = true;
     [RelayCommand] private void CancelDelete(ChatSessionViewModel session) => session.IsDeleteConfirmationOpen = false;
+
+    public Task<IReadOnlyList<ChatMessage>> GetSessionMessagesAsync(string sessionId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        return _history.GetBySessionAsync(sessionId);
+    }
 
     public async Task RenameSessionAsync(ChatSessionViewModel session, string title)
     {

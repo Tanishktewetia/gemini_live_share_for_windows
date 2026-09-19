@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Controls;
@@ -314,6 +316,134 @@ public partial class MainWindow : Window
             SettingsViewModel.StatusMessage = $"Could not open {label}: {ex.Message}";
         }
     }
+    private async void OnExportSessionClick(object sender, RoutedEventArgs e)
+    {
+        ChatSessionViewModel? session = _viewModel.SelectedSession;
+        if (session is null)
+        {
+            return;
+        }
+
+        Microsoft.Win32.SaveFileDialog dialog = new()
+        {
+            Title = "Export conversation",
+            Filter = "Markdown (*.md)|*.md|Text (*.txt)|*.txt|JSON (*.json)|*.json",
+            DefaultExt = ".md",
+            AddExtension = true,
+            FileName = BuildExportFileName(session.Summary)
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            IReadOnlyList<GeminiLiveShare.Core.Storage.ChatMessage> messages =
+                await _viewModel.GetSessionMessagesAsync(session.SessionId);
+            string extension = Path.GetExtension(dialog.FileName);
+            string output = extension.Equals(".json", StringComparison.OrdinalIgnoreCase)
+                ? BuildJsonTranscript(session, messages)
+                : BuildTextTranscript(session, messages, markdown: extension.Equals(".md", StringComparison.OrdinalIgnoreCase));
+            await File.WriteAllTextAsync(dialog.FileName, output, Encoding.UTF8);
+            _viewModel.ConnectionStatus = $"Conversation exported: {dialog.FileName}";
+        }
+        catch (Exception ex)
+        {
+            _viewModel.ConnectionStatus = $"Unable to export conversation: {ex.Message}";
+        }
+    }
+
+    private static string BuildExportFileName(string title)
+    {
+        string safeTitle = SanitizeFileName(string.IsNullOrWhiteSpace(title) ? "conversation" : title);
+        return $"{safeTitle}-{DateTime.Now:yyyyMMdd-HHmmss}.md";
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        char[] invalid = Path.GetInvalidFileNameChars();
+        StringBuilder builder = new(value.Length);
+        foreach (char character in value)
+        {
+            builder.Append(invalid.Contains(character) ? '_' : character);
+        }
+
+        string result = builder.ToString().Trim();
+        return string.IsNullOrWhiteSpace(result) ? "conversation" : result;
+    }
+
+    private static string BuildTextTranscript(
+        ChatSessionViewModel session,
+        IReadOnlyList<GeminiLiveShare.Core.Storage.ChatMessage> messages,
+        bool markdown)
+    {
+        StringBuilder builder = new();
+        if (markdown)
+        {
+            builder.AppendLine($"# {session.Summary}");
+            builder.AppendLine();
+            builder.AppendLine($"- Session ID: `{session.SessionId}`");
+            builder.AppendLine($"- Exported: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}");
+            builder.AppendLine($"- Messages: {messages.Count}");
+            builder.AppendLine();
+            foreach (GeminiLiveShare.Core.Storage.ChatMessage message in messages.OrderBy(item => item.CreatedAtUtc))
+            {
+                string role = message.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase) ? "Gemini" : "User";
+                DateTimeOffset local = new DateTimeOffset(DateTime.SpecifyKind(message.CreatedAtUtc, DateTimeKind.Utc), TimeSpan.Zero).ToLocalTime();
+                builder.AppendLine($"## {role} — {local:yyyy-MM-dd HH:mm:ss}");
+                builder.AppendLine();
+                builder.AppendLine(message.Text);
+                builder.AppendLine();
+            }
+        }
+        else
+        {
+            builder.AppendLine(session.Summary);
+            builder.AppendLine(new string('=', session.Summary.Length));
+            builder.AppendLine($"Session ID: {session.SessionId}");
+            builder.AppendLine($"Exported: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}");
+            builder.AppendLine($"Messages: {messages.Count}");
+            builder.AppendLine();
+            foreach (GeminiLiveShare.Core.Storage.ChatMessage message in messages.OrderBy(item => item.CreatedAtUtc))
+            {
+                string role = message.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase) ? "Gemini" : "User";
+                DateTimeOffset local = new DateTimeOffset(DateTime.SpecifyKind(message.CreatedAtUtc, DateTimeKind.Utc), TimeSpan.Zero).ToLocalTime();
+                builder.AppendLine($"[{local:yyyy-MM-dd HH:mm:ss}] {role}");
+                builder.AppendLine(message.Text);
+                builder.AppendLine();
+            }
+        }
+
+        return builder.ToString().TrimEnd() + Environment.NewLine;
+    }
+
+    private static string BuildJsonTranscript(
+        ChatSessionViewModel session,
+        IReadOnlyList<GeminiLiveShare.Core.Storage.ChatMessage> messages)
+    {
+        var payload = new
+        {
+            sessionId = session.SessionId,
+            title = session.Summary,
+            exportedAt = DateTimeOffset.Now,
+            messageCount = messages.Count,
+            messages = messages
+                .OrderBy(item => item.CreatedAtUtc)
+                .Select(item => new
+                {
+                    id = item.Id,
+                    role = item.Role,
+                    createdAtUtc = DateTime.SpecifyKind(item.CreatedAtUtc, DateTimeKind.Utc),
+                    text = item.Text
+                })
+                .ToArray()
+        };
+
+        return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+    }
+
     private void OnResetPositionClick(object sender, RoutedEventArgs e)
     {
         SettingsViewModel.ResetOverlayPosition();
