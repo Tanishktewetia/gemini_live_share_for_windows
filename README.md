@@ -29,6 +29,10 @@ dotnet build GeminiLiveShare.sln
 Run the app from `src/GeminiLiveShare.App`. On first launch, enter a Gemini API key
 in Settings; it is stored in the Windows Credential Vault.
 
+For direct internet search, create a local `.env` file in the repository root (never
+commit it) with `EXA_API_KEY=...` and `TAVILY_API_KEY=...`. The app uses Exa first and
+Tavily as fallback; process environment variables take precedence over `.env` values.
+
 Tests are a console harness, not xUnit:
 
 ```bash

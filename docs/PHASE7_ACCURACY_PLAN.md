@@ -102,9 +102,10 @@ Automation cannot reach, and never answers from a frame older than the question.
 1. Enable billing on the Google Cloud project behind the API key. Restart the app
    (the "no quota" result is cached per app run) and check the log for the
    "Web search is not available" line. If it is gone, this step is complete.
-2. If still refused: add a `web_search(query)` tool. Gemini Live calls it; the app
-   makes a regular Gemini call with Google Search enabled and returns the result.
-3. Either way, surface the state in the UI, not only in a transient status message.
+2. If Live search is refused: the `web_search(query)` tool retrieves directly from
+   Exa first and Tavily second using `EXA_API_KEY` and `TAVILY_API_KEY`; it does not
+   ask another Gemini model to search. The result includes the provider and sources.
+3. Surface the state in the UI/log, not only in a transient status message.
 
 **Done when:** "who makes Antigravity?" returns a real, sourced answer, and the UI
 makes it obvious when search is unavailable.
@@ -114,7 +115,7 @@ makes it obvious when search is unavailable.
 **Size:** medium to large. This is the feature that makes guidance usable for the
 target audience.
 
-`highlight_element(name, role)`:
+`highlight_element(name, role, location?)`:
 
 1. Find the element: UI Automation in the foreground window (visible and enabled);
    browser page data for web pages; a vision bounding box as a last resort.
@@ -132,7 +133,8 @@ Details that will bite if missed:
 - **Multiple monitors**: place the overlay on the monitor containing the element.
 - **Off-screen elements**: call `ScrollIntoView` first.
 - **Ambiguity**: several matching "Next" buttons means highlight the likeliest and
-  ask "this one?", rather than picking silently.
+  ask "this one?", rather than picking silently. Location hints such as `left_sidebar`,
+  `recent`, `desktop` and `taskbar` are used to disambiguate duplicate Explorer names.
 - **Point, do not click.** Clicking for the user risks doing the wrong thing without
   them noticing, and they learn nothing. An opt-in "let Gemini click" setting can
   come later, with confirmation, reusing the 6h confirmation service.

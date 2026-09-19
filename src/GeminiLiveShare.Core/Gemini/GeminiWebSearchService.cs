@@ -4,168 +4,372 @@ using System.Text.Json;
 
 namespace GeminiLiveShare.Core.Gemini;
 
+/// <summary>
+/// Performs web retrieval directly through Exa, with Tavily as the fallback.
+/// The Live model is deliberately not asked to perform internet retrieval.
+/// </summary>
 public sealed class GeminiWebSearchService : IWebSearchService
 {
-    // These are the lightweight generateContent models verified for the API key used by
-    // this app. The Live model name is not automatically valid for regular REST calls.
-    private static readonly string[] Models = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite"];
-    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
+    private const string ExaEndpoint = "https://api.exa.ai/search";
+    private const string TavilyEndpoint = "https://api.tavily.com/search";
+    private const int MaxResults = 5;
+    private const int MaxSummaryCharacters = 2400;
+
+    private readonly HttpClient _httpClient;
+    private readonly Func<string?> _exaApiKeyProvider;
+    private readonly Func<string?> _tavilyApiKeyProvider;
+
+    public GeminiWebSearchService(
+        HttpClient? httpClient = null,
+        Func<string?>? exaApiKeyProvider = null,
+        Func<string?>? tavilyApiKeyProvider = null)
+    {
+        _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        _exaApiKeyProvider = exaApiKeyProvider ?? (() => LoadConfiguredKey("EXA_API_KEY"));
+        _tavilyApiKeyProvider = tavilyApiKeyProvider ?? (() => LoadConfiguredKey("TAVILY_API_KEY"));
+    }
 
     public async Task<WebSearchResult> SearchAsync(string apiKey, string query, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+        // apiKey remains in the interface because the orchestrator also uses it for
+        // the Live session. Direct search providers use their own keys instead.
+        _ = apiKey;
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
 
-        Exception? lastError = null;
-        foreach (string model in Models)
+        List<string> failures = new();
+        string? exaApiKey = NormalizeSecret(_exaApiKeyProvider());
+        if (!string.IsNullOrWhiteSpace(exaApiKey))
         {
             try
             {
-                return await SearchAsync(model, apiKey, query, cancellationToken).ConfigureAwait(false);
+                return await SearchExaAsync(exaApiKey, query, cancellationToken).ConfigureAwait(false);
             }
-            catch (WebSearchUnavailableException ex)
+            catch (Exception ex) when (ex is SearchProviderUnavailableException or HttpRequestException ||
+                                         ex is TaskCanceledException && !cancellationToken.IsCancellationRequested)
             {
-                lastError = ex;
+                failures.Add(FormatProviderFailure("Exa", ex));
             }
         }
+        else
+        {
+            failures.Add("Exa API key is not configured.");
+        }
 
-        throw lastError ?? new InvalidOperationException("No web search model was available.");
+        string? tavilyApiKey = NormalizeSecret(_tavilyApiKeyProvider());
+        if (!string.IsNullOrWhiteSpace(tavilyApiKey))
+        {
+            try
+            {
+                return await SearchTavilyAsync(tavilyApiKey, query, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is SearchProviderUnavailableException or HttpRequestException ||
+                                         ex is TaskCanceledException && !cancellationToken.IsCancellationRequested)
+            {
+                failures.Add(FormatProviderFailure("Tavily", ex));
+            }
+        }
+        else
+        {
+            failures.Add("Tavily API key is not configured.");
+        }
+
+        throw new SearchProviderUnavailableException(
+            "Direct web search is unavailable. Configure EXA_API_KEY and/or TAVILY_API_KEY in the app environment. " +
+            string.Join("; ", failures));
     }
 
-    private static async Task<WebSearchResult> SearchAsync(string model, string apiKey, string query, CancellationToken cancellationToken)
+    private async Task<WebSearchResult> SearchExaAsync(string apiKey, string query, CancellationToken cancellationToken)
     {
-        foreach (object tools in BuildToolVariants())
+        object request = new
         {
-            object request = new
+            query,
+            type = "auto",
+            numResults = MaxResults,
+            contents = new
             {
-                contents = new[]
+                highlights = new
                 {
-                    new
-                    {
-                        parts = new[]
-                        {
-                            new
-                            {
-                                text = "Search the web and answer with concise facts. Include 3-5 source names or domains when possible. Query: " + query
-                            }
-                        }
-                    }
-                },
-                tools,
-                generationConfig = new { temperature = 0.1, maxOutputTokens = 450 }
-            };
-
-            using HttpRequestMessage httpRequest = new(
-                HttpMethod.Post,
-                $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent")
-            {
-                Content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json")
-            };
-            httpRequest.Headers.Add("x-goog-api-key", apiKey);
-
-            using HttpResponseMessage response = await HttpClient.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
-            string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                string message = $"{model} returned HTTP {(int)response.StatusCode}: {ReadErrorMessage(body)}";
-                if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.TooManyRequests or
-                    HttpStatusCode.ServiceUnavailable or HttpStatusCode.InternalServerError)
-                {
-                    throw new WebSearchUnavailableException(message);
+                    maxCharacters = 800
                 }
-
-                if ((int)response.StatusCode == 400)
-                {
-                    // try the next tool schema variant
-                    continue;
-                }
-
-                throw new InvalidOperationException(message);
             }
+        };
 
-            if (!TryParseResult(body, out WebSearchResult result))
-            {
-                continue;
-            }
+        using HttpRequestMessage httpRequest = new(HttpMethod.Post, ExaEndpoint)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json")
+        };
+        httpRequest.Headers.TryAddWithoutValidation("x-api-key", apiKey);
 
-            return result;
-        }
-
-        throw new WebSearchUnavailableException("Web search tool schema was rejected by the API.");
+        using HttpResponseMessage response = await _httpClient.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+        string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        EnsureSuccess("Exa", response.StatusCode, body);
+        return ParseSearchResponse("exa", body, ParseExaResults);
     }
 
-    private static bool TryParseResult(string body, out WebSearchResult result)
+    private async Task<WebSearchResult> SearchTavilyAsync(string apiKey, string query, CancellationToken cancellationToken)
     {
-        result = new WebSearchResult(string.Empty, Array.Empty<string>(), false);
-        using JsonDocument document = JsonDocument.Parse(body);
-        if (!document.RootElement.TryGetProperty("candidates", out JsonElement candidates) ||
-            candidates.GetArrayLength() == 0 ||
-            !candidates[0].TryGetProperty("content", out JsonElement content) ||
-            !content.TryGetProperty("parts", out JsonElement parts))
+        object request = new
         {
-            return false;
-        }
+            query,
+            search_depth = "advanced",
+            max_results = MaxResults,
+            include_answer = false,
+            include_raw_content = false,
+            topic = "general"
+        };
 
-        string summary = string.Concat(parts.EnumerateArray()
-            .Where(part => !(part.TryGetProperty("thought", out JsonElement thought) && thought.ValueKind == JsonValueKind.True))
-            .Select(part => part.TryGetProperty("text", out JsonElement partText) ? partText.GetString() : null))
-            .Trim();
-        if (string.IsNullOrWhiteSpace(summary))
+        using HttpRequestMessage httpRequest = new(HttpMethod.Post, TavilyEndpoint)
         {
-            return false;
-        }
+            Content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json")
+        };
+        httpRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
 
-        List<string> sources = new();
-        if (candidates[0].TryGetProperty("groundingMetadata", out JsonElement grounding) &&
-            grounding.TryGetProperty("groundingChunks", out JsonElement chunks) &&
-            chunks.ValueKind == JsonValueKind.Array)
+        using HttpResponseMessage response = await _httpClient.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+        string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        EnsureSuccess("Tavily", response.StatusCode, body);
+        return ParseSearchResponse("tavily", body, ParseTavilyResults);
+    }
+
+    private static WebSearchResult ParseSearchResponse(
+        string provider,
+        string body,
+        Func<JsonElement, IReadOnlyList<SearchHit>> resultParser)
+    {
+        try
         {
-            foreach (JsonElement chunk in chunks.EnumerateArray())
+            using JsonDocument document = JsonDocument.Parse(body);
+            IReadOnlyList<SearchHit> hits = resultParser(document.RootElement);
+            if (hits.Count == 0)
             {
-                if (!chunk.TryGetProperty("web", out JsonElement web))
-                {
-                    continue;
-                }
+                throw new SearchProviderUnavailableException($"{provider} returned no usable search results.");
+            }
 
-                string? title = web.TryGetProperty("title", out JsonElement titleElement)
-                    ? titleElement.GetString()
-                    : null;
-                string? uri = web.TryGetProperty("uri", out JsonElement uriElement)
-                    ? uriElement.GetString()
-                    : null;
-                string? source = !string.IsNullOrWhiteSpace(title)
-                    ? title
-                    : uri;
-                if (!string.IsNullOrWhiteSpace(source))
+            string summary = string.Join(" ", hits
+                .Select(hit => string.IsNullOrWhiteSpace(hit.Snippet)
+                    ? hit.Title
+                    : $"{hit.Title}: {hit.Snippet}")
+                .Where(text => !string.IsNullOrWhiteSpace(text)));
+            summary = Trim(summary, MaxSummaryCharacters);
+            if (string.IsNullOrWhiteSpace(summary))
+            {
+                throw new SearchProviderUnavailableException($"{provider} returned no readable search text.");
+            }
+
+            string[] sources = hits
+                .Select(hit => string.IsNullOrWhiteSpace(hit.Title) ? hit.Url : hit.Title)
+                .Where(source => !string.IsNullOrWhiteSpace(source))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MaxResults)
+                .ToArray();
+            return new WebSearchResult(summary, sources, true, provider);
+        }
+        catch (JsonException ex)
+        {
+            throw new SearchProviderUnavailableException($"{provider} returned invalid JSON: {ex.Message}");
+        }
+    }
+
+    private static IReadOnlyList<SearchHit> ParseExaResults(JsonElement root)
+    {
+        if (!root.TryGetProperty("results", out JsonElement results) || results.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<SearchHit>();
+        }
+
+        List<SearchHit> hits = new();
+        foreach (JsonElement result in results.EnumerateArray())
+        {
+            string title = GetString(result, "title");
+            string url = GetString(result, "url");
+            List<string> snippets = new();
+            if (result.TryGetProperty("highlights", out JsonElement highlights) && highlights.ValueKind == JsonValueKind.Array)
+            {
+                snippets.AddRange(highlights.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.String)
+                    .Select(item => item.GetString() ?? string.Empty));
+            }
+
+            if (snippets.Count == 0)
+            {
+                string text = GetString(result, "text");
+                if (!string.IsNullOrWhiteSpace(text))
                 {
-                    sources.Add(source);
+                    snippets.Add(text);
                 }
             }
+
+            AddHit(hits, title, url, snippets);
         }
 
-        result = new WebSearchResult(summary, sources.Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToArray(), true);
-        return true;
+        return hits;
     }
 
-    private static IEnumerable<object> BuildToolVariants()
+    private static IReadOnlyList<SearchHit> ParseTavilyResults(JsonElement root)
     {
-        yield return new object[] { new { googleSearch = new { } } };
-        yield return new object[] { new { google_search = new { } } };
+        if (!root.TryGetProperty("results", out JsonElement results) || results.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<SearchHit>();
+        }
+
+        List<SearchHit> hits = new();
+        foreach (JsonElement result in results.EnumerateArray())
+        {
+            AddHit(hits, GetString(result, "title"), GetString(result, "url"), [GetString(result, "content")]);
+        }
+
+        return hits;
     }
+
+    private static void AddHit(List<SearchHit> hits, string title, string url, IEnumerable<string> snippets)
+    {
+        string snippet = Trim(string.Join(" ", snippets.Where(value => !string.IsNullOrWhiteSpace(value))), 700);
+        if (!string.IsNullOrWhiteSpace(title) || !string.IsNullOrWhiteSpace(url) || !string.IsNullOrWhiteSpace(snippet))
+        {
+            hits.Add(new SearchHit(Trim(title, 220), url, snippet));
+        }
+    }
+
+    private static string GetString(JsonElement element, string property) =>
+        element.TryGetProperty(property, out JsonElement value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()?.Trim() ?? string.Empty
+            : string.Empty;
+
+    private static void EnsureSuccess(string provider, HttpStatusCode statusCode, string body)
+    {
+        if (statusCode is >= HttpStatusCode.OK and < HttpStatusCode.MultipleChoices)
+        {
+            return;
+        }
+
+        throw new SearchProviderUnavailableException(
+            $"{provider} returned HTTP {(int)statusCode}: {ReadErrorMessage(body)}");
+    }
+
+    private static string FormatProviderFailure(string provider, Exception exception) =>
+        exception is SearchProviderUnavailableException
+            ? exception.Message
+            : $"{provider} request failed ({exception.GetType().Name}).";
 
     private static string ReadErrorMessage(string body)
     {
         try
         {
             using JsonDocument document = JsonDocument.Parse(body);
-            string message = document.RootElement.GetProperty("error").GetProperty("message").GetString() ?? string.Empty;
-            return message.Length > 240 ? message[..240] : message;
+            if (document.RootElement.TryGetProperty("detail", out JsonElement detail))
+            {
+                return Trim(detail.GetString() ?? "no error details", 240);
+            }
+
+            if (document.RootElement.TryGetProperty("message", out JsonElement message))
+            {
+                return Trim(message.GetString() ?? "no error details", 240);
+            }
+
+            if (document.RootElement.TryGetProperty("error", out JsonElement error))
+            {
+                return error.ValueKind == JsonValueKind.String
+                    ? Trim(error.GetString() ?? "no error details", 240)
+                    : Trim(error.GetRawText(), 240);
+            }
         }
-        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
+        catch (JsonException)
         {
-            return "no error details";
+            // Return a stable generic message rather than exposing provider response text.
+        }
+
+        return "no error details";
+    }
+
+    private static string? LoadConfiguredKey(string name)
+    {
+        string? processValue = Environment.GetEnvironmentVariable(name);
+        if (!string.IsNullOrWhiteSpace(processValue))
+        {
+            return NormalizeSecret(processValue);
+        }
+
+        foreach (string path in EnumerateDotEnvPaths())
+        {
+            try
+            {
+                foreach (string line in File.ReadLines(path))
+                {
+                    if (TryParseDotEnvLine(line, name, out string value))
+                    {
+                        return NormalizeSecret(value);
+                    }
+                }
+            }
+            catch (IOException)
+            {
+                // Another process may be writing the file; continue to the next candidate.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Do not fail the session because an optional .env candidate is unreadable.
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateDotEnvPaths()
+    {
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+        {
+            DirectoryInfo? directory = new(start);
+            while (directory is not null)
+            {
+                string path = Path.Combine(directory.FullName, ".env");
+                if (seen.Add(path))
+                {
+                    yield return path;
+                }
+
+                directory = directory.Parent;
+            }
         }
     }
 
-    private sealed class WebSearchUnavailableException(string message) : Exception(message);
+    private static bool TryParseDotEnvLine(string line, string expectedName, out string value)
+    {
+        value = string.Empty;
+        string trimmed = line.Trim();
+        if (trimmed.Length == 0 || trimmed.StartsWith('#'))
+        {
+            return false;
+        }
+
+        if (trimmed.StartsWith("export ", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[7..].TrimStart();
+        }
+
+        int separator = trimmed.IndexOf('=');
+        if (separator <= 0 || !trimmed[..separator].Trim().Equals(expectedName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        value = trimmed[(separator + 1)..].Trim();
+        if (value.Length >= 2 && ((value[0] == '"' && value[^1] == '"') || (value[0] == '\'' && value[^1] == '\'')))
+        {
+            value = value[1..^1];
+        }
+
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static string? NormalizeSecret(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim().Trim('"', '\'');
+
+    private static string Trim(string value, int maxCharacters) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Length > maxCharacters ? value[..maxCharacters] + "…" : value;
+
+    private sealed record SearchHit(string Title, string Url, string Snippet);
+
+    private sealed class SearchProviderUnavailableException(string message) : Exception(message);
 }

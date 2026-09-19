@@ -1150,14 +1150,15 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             WebSearchResult result = await _webSearchService
                 .SearchAsync(_apiKey, query, cancellationToken)
                 .ConfigureAwait(false);
-            _diagnostics.Log($"web search tool completed: reliable={(result.IsReliable ? "yes" : "no")}, sources={result.Sources.Count}");
+            _diagnostics.Log($"web search tool completed: provider={result.Provider}, reliable={(result.IsReliable ? "yes" : "no")}, sources={result.Sources.Count}");
             return JsonSerializer.SerializeToElement(new
             {
                 ok = true,
                 reliable = result.IsReliable,
                 query,
                 summary = result.Summary,
-                sources = result.Sources
+                sources = result.Sources,
+                provider = result.Provider
             });
         }
         catch (Exception ex)
@@ -1265,7 +1266,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     }
 
     private static string BuildSearchDiagnostic(JsonElement response) =>
-        $"reliable={(response.TryGetProperty("reliable", out JsonElement reliable) && reliable.ValueKind == JsonValueKind.True ? "yes" : "no")}, sources={(response.TryGetProperty("sources", out JsonElement sources) && sources.ValueKind == JsonValueKind.Array ? sources.GetArrayLength() : 0)}";
+        $"provider={(response.TryGetProperty("provider", out JsonElement provider) ? provider.GetString() : "unknown")}, reliable={(response.TryGetProperty("reliable", out JsonElement reliable) && reliable.ValueKind == JsonValueKind.True ? "yes" : "no")}, sources={(response.TryGetProperty("sources", out JsonElement sources) && sources.ValueKind == JsonValueKind.Array ? sources.GetArrayLength() : 0)}";
 
     private static string BuildZoomDiagnostic(JsonElement response) =>
         response.TryGetProperty("bounds", out JsonElement bounds)

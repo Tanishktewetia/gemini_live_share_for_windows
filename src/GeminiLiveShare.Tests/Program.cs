@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Net;
 using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Diagnostics;
@@ -34,6 +35,7 @@ await ValidateUnreliableCountGuardAsync();
 await ValidateZoomRegionToolAsync();
 await ValidateHighlightElementToolAsync();
 await ValidateWebSearchToolAsync();
+await ValidateDirectSearchProvidersAsync();
 await ValidateToolCallDoesNotTriggerSilentRecoveryAsync();
 await ValidateFreshFrameOnUserSpeechAsync();
 ValidateGlobalHotkeySettings();
@@ -962,6 +964,52 @@ static async Task ValidateWebSearchToolAsync()
     await orchestrator.StopAsync();
 }
 
+static async Task ValidateDirectSearchProvidersAsync()
+{
+    RecordingHttpMessageHandler exaHandler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+    {
+        Content = new StringContent("{\"results\":[{\"title\":\"Exa result\",\"url\":\"https://example.test/exa\",\"highlights\":[\"Exa found the requested fact.\"]}]}")
+    });
+    GeminiWebSearchService exaService = new(
+        new HttpClient(exaHandler),
+        () => "exa-test-key",
+        () => "tavily-test-key");
+
+    WebSearchResult exaResult = await exaService.SearchAsync("unused-live-key", "test query");
+    Require(exaResult.Provider == "exa", "Exa was not used as the primary direct search provider");
+    Require(exaResult.Sources.Contains("Exa result"), "Exa source title was not returned");
+    Require(exaHandler.Requests.Count == 1 && exaHandler.Requests[0].RequestUri?.Host == "api.exa.ai",
+        "Exa search did not use the expected endpoint");
+
+    RecordingHttpMessageHandler fallbackHandler = new(request =>
+    {
+        if (request.RequestUri?.Host == "api.exa.ai")
+        {
+            return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            {
+                Content = new StringContent("{\"error\":\"invalid Exa key\"}")
+            };
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"results\":[{\"title\":\"Tavily result\",\"url\":\"https://example.test/tavily\",\"content\":\"Tavily found the fallback fact.\"}]}")
+        };
+    });
+    GeminiWebSearchService fallbackService = new(
+        new HttpClient(fallbackHandler),
+        () => "exa-test-key",
+        () => "tavily-test-key");
+
+    WebSearchResult fallbackResult = await fallbackService.SearchAsync("unused-live-key", "fallback query");
+    Require(fallbackResult.Provider == "tavily", "Tavily was not used after Exa failed");
+    Require(fallbackResult.Sources.Contains("Tavily result"), "Tavily source title was not returned");
+    Require(fallbackHandler.Requests.Count == 2 && fallbackHandler.Requests[1].RequestUri?.Host == "api.tavily.com",
+        "Tavily fallback did not use the expected endpoint");
+    Require(fallbackHandler.Requests[1].Headers.Authorization?.Scheme == "Bearer",
+        "Tavily authorization header was not sent as Bearer authentication");
+}
+
 static async Task ValidateToolCallDoesNotTriggerSilentRecoveryAsync()
 {
     FakeLiveClient client = new();
@@ -1242,6 +1290,17 @@ file sealed class RecordingHighlightOverlay : IHighlightOverlayService
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+file sealed class RecordingHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+{
+    public List<HttpRequestMessage> Requests { get; } = [];
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Requests.Add(request);
+        return Task.FromResult(responder(request));
+    }
 }
 
 file sealed class FakeWebSearchService(TimeSpan? delay = null) : IWebSearchService

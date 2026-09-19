@@ -103,7 +103,7 @@ session log. See `PHASE_LOG.md` §1 for the numbers.
 | Overlay UI, tray, global hotkey | Working (Phase 5 complete) |
 | Reconnect with session resumption | Working |
 | Phase 7e zoom_region + fresh-frame forcing | Corrective model/watchdog fixes in code; real-app verification pending after restart |
-| Phase 7f web search | Live/app fallback wiring works; regular-call model fallback corrected; real-key verification pending |
+| Phase 7f web search | Direct Exa primary + Tavily fallback implemented; real-key verification pending |
 | Phase 7g element highlighting | Foreground/root UI Automation, location hints and overlay visibility checks implemented; real-app verification pending |
 | Diagnostics log | Working: `%LOCALAPPDATA%\GeminiLiveShare\logs\session-yyyyMMdd.log` |
 | Browser agent 6a–6e | Working: extension ⇄ proxy ⇄ app pipe, `get_active_page`, `get_form_fields`, page context injected into the conversation. **Read-only** |
@@ -131,11 +131,12 @@ for the remaining visual details; and instruct the model never to guess.
 Details are recorded in `PHASE_LOG.md`.
 
 ### P2 — Live Google Search can be refused by API-key quota
-Live Google Search grounding is attempted first. If the key lacks the required quota,
-the client falls back to the app-level `web_search` function tool, which uses a
-regular Gemini request with Google Search grounding. The UI shows whether search is
-using Live grounding, the app fallback, or is unavailable. Billing/quota changes are
-still external to this repository.
+
+Live Google Search grounding may be refused by the Gemini API key. The app-level
+`web_search` function tool now retrieves directly from **Exa first and Tavily second**
+using `EXA_API_KEY` and `TAVILY_API_KEY` from process environment variables or a local
+`.env` file. It does not ask a Gemini generateContent model to perform internet search.
+The selected provider is returned in the tool result and recorded in the diagnostics log.
 
 ### P3 — Element highlighting
 Resolved in Phase 7g for Windows desktop controls. `highlight_element` finds visible
@@ -151,15 +152,16 @@ shows a Reconnected badge. Manual network-drop verification remains.
 ## 6. What's next
 
 **Current phase: Phase 7 — Accuracy and reliability.** The implementation has been
-corrected after a real-session tool-setup failure, but Phase 7 is **not acceptance-complete**
-until the restarted app produces real highlight/search tool calls and the manual checks
-pass. Full detail is in `docs/PHASE7_ACCURACY_PLAN.md`.
+corrected after real-session tool-setup, highlighting, timing and search failures, but
+Phase 7 is **not acceptance-complete** until the restarted app produces a visible,
+correctly located highlight and a real Exa/Tavily result with the user's keys. Full
+detail is in `docs/PHASE7_ACCURACY_PLAN.md`.
 
 | Order | Step | Size |
 |---|---|---|
 | 1 | 7c System instruction: never guess; ask the user to point | Implemented |
 | 2 | 7d UI Automation tools: element under cursor, taskbar, desktop icons, focused window | Implemented |
-| 3 | 7f Web search: Live grounding plus app `web_search` fallback | Implemented |
+| 3 | 7f Web search: Live grounding plus direct Exa/Tavily `web_search` fallback | Implemented; real-key verification pending |
 | 4 | 7e Zoom tool plus a fresh frame when the user starts speaking | Implemented |
 | 5 | 7g `highlight_element`: click-through overlay pointing at the real control | Implemented; manual DPI/browser verification remains |
 | 6 | 7b Reconnect context: carry a conversation summary into a fresh session | Implemented |

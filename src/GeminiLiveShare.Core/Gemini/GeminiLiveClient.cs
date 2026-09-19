@@ -75,7 +75,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                 {
                     name = new { type = "string" },
                     role = new { type = "string" },
-                    location = new { type = "string", description = "Optional hint such as left_sidebar, quick_access, desktop, or taskbar." }
+                    location = new { type = "string", description = "Optional hint such as left_sidebar, quick_access, recent, desktop, or taskbar." }
                 },
                 required = new[] { "name" },
             })
@@ -83,7 +83,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         new FunctionDeclaration
         {
             Name = "web_search",
-            Description = "Search the public web using a regular Gemini request and return a concise sourced result. Use when current information is needed and Google Search grounding is not enabled in Live.",
+            Description = "Search the public web through the app's configured direct providers (Exa first, Tavily fallback) and return a concise sourced result. Use when current information is needed and Live Google Search grounding is not enabled.",
             Parameters = JsonSerializer.SerializeToElement(new
             {
                 type = "object",
@@ -147,7 +147,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             (webSearchAvailable
                 ? "WEB SEARCH:\n- You can use Google Search. Use it when the user asks you to look something up or when a question " +
                   "needs current or factual information about products, companies or websites. Base your answer on the results."
-                : "WEB SEARCH:\n- Google Search grounding is unavailable. Never say you searched unless the app's web_search tool returned a result. Call web_search for current or factual information. " +
+                : "WEB SEARCH:\n- Live Google Search grounding is unavailable. The app's web_search tool uses direct Exa retrieval with Tavily fallback. Never say you searched unless web_search returned a result. Call web_search for current or factual information. " +
                   "If that tool fails, say that web search is temporarily unavailable and do not invent current facts.") +
             "\n\nNAMES YOU MAY HEAR:\n- Speech recognition often mishears product names. \"Cloud\" or \"Cloud Code\" said about an AI app " +
             "usually means Claude or Claude Code, made by Anthropic. If the user corrects a name, use their correction from then on.";
@@ -165,7 +165,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         "- Never guess. If evidence is weak, partial or blurry, say you cannot see clearly.\n" +
         "- For pointer location, counting items, reading small text, or identifying icons/controls, use an available tool first.\n" +
         "- Available desktop tools include get_element_under_cursor, list_taskbar_items, list_desktop_icons, get_focused_window, zoom_region, and highlight_element.\n" +
-        "- When the user asks you to highlight or show where to click, call highlight_element first. If the user names a place such as the left sidebar, Quick access, desktop or taskbar, pass that as the location hint. Never claim a visible highlight unless the tool succeeds.\n" +
+        "- When the user asks you to highlight or show where to click, call highlight_element first. If the user names a place such as the left sidebar, Quick access, Recent, desktop or taskbar, pass that as the location hint. Never claim a visible highlight unless the tool succeeds.\n" +
         "- When current web information is needed and Live Google Search is unavailable, call web_search. Never claim a search happened without a successful tool result.\n" +
         "- For details UI Automation cannot access (tiny text in images, scanned PDFs), call zoom_region and specify either grid cells A1-D4 or a box.\n" +
         "- If no tool is available for that request, say you cannot see it clearly from the screenshot instead of inventing an answer.\n" +

@@ -616,3 +616,26 @@ implementation, files changed, verification performed, and manual test steps.
   3. In File Explorer, ask “highlight Downloads in the left sidebar.” A visible orange box must sit on the sidebar item, not the main content item. Repeat at 125%/150% scaling if available.
   4. Ask for a zoom/read-small-text operation. The log must show a tool response with bounds and no reconnect while the tool is running.
   5. Leave the conversation running for at least two minutes with screen share enabled. There must be no watchdog-triggered `Disconnecting`/`Connected` pair unless the network actually fails.
+
+
+## Phase 7 search and Explorer-highlight follow-up
+
+- **Date:** 2026-09-19
+- **Status:** Implemented and automated-tested; real-provider and real-display acceptance is pending.
+- **Reported problems:** Explorer highlights could land on the wrong duplicate item under Recent, lookup latency varied from under one second to several seconds, and Gemini-based internet search still failed.
+- **Implementation:**
+  - Replaced the regular Gemini web-search fallback with direct provider calls: Exa is primary and Tavily is fallback. Exa uses `POST https://api.exa.ai/search` with `x-api-key`; Tavily uses `POST https://api.tavily.com/search` with Bearer authentication. Results are converted into a deterministic sourced summary without asking a Gemini model to perform retrieval.
+  - Added `.env` loading for `EXA_API_KEY` and `TAVILY_API_KEY`, while process environment variables take precedence. Values are never logged or returned. `.env` remains ignored by Git.
+  - Added provider names to tool responses and diagnostics, so a real session can prove whether Exa or Tavily answered.
+  - Optimized UI Automation highlighting: exact accessible-name lookup is attempted first, the full desktop tree is only searched when the foreground window cannot satisfy the request, and `recent`/location hints disambiguate duplicate Explorer entries.
+  - Kept the existing overlay visibility check and watchdog pause; Browser Agent files remain untouched.
+- **Files changed:** `.gitignore`, `GeminiWebSearchService.cs`, `IWebSearchService.cs`, `SessionOrchestrator.cs`, `GeminiLiveClient.cs`, `DesktopAutomationService.cs`, and `src/GeminiLiveShare.Tests/Program.cs`; phase/state documentation updated.
+- **Automated verification:**
+  - Solution build passed with 0 warnings and 0 errors.
+  - Console test harness passed, including direct Exa-success and Tavily-fallback HTTP tests and the no-reconnect tool-watchdog regression.
+  - Browser Agent syntax check remains passing; no Browser Agent source was changed.
+- **Manual verification still required:**
+  1. Restart the application with the local `.env` present.
+  2. Ask for a current web lookup and confirm the log says `web search tool completed: provider=exa` or `provider=tavily`.
+  3. In Explorer Recent, ask “highlight [exact item] under Recent.” Confirm the box is on that item, not a navigation or another duplicate row.
+  4. Repeat highlighting several items and record response latency.

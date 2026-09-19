@@ -238,13 +238,25 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
             string needle = name.Trim();
             ControlType[]? preferredTypes = ResolveRoleControlTypes(role);
             List<HighlightCandidate> candidates = new();
+            string normalizedLocation = NormalizeLocation(location);
+            bool hasLocationHint = normalizedLocation.Length > 0;
             Condition baseCondition = new AndCondition(
                 new PropertyCondition(AutomationElement.IsOffscreenProperty, false),
                 new PropertyCondition(AutomationElement.IsEnabledProperty, true));
+            Condition exactNameCondition = new AndCondition(
+                baseCondition,
+                new PropertyCondition(AutomationElement.NameProperty, needle, PropertyConditionFlags.IgnoreCase));
 
             foreach ((AutomationElement root, int rootPriority) in roots)
             {
-                AutomationElementCollection elements = root.FindAll(TreeScope.Descendants, baseCondition);
+                AutomationElementCollection elements = root.FindAll(TreeScope.Descendants, exactNameCondition);
+                if (elements.Count == 0)
+                {
+                    // Keep the user-facing behavior forgiving when speech recognition returns only part of a label.
+                    elements = root.FindAll(TreeScope.Descendants, baseCondition);
+                }
+
+                int beforeRoot = candidates.Count;
                 foreach (AutomationElement element in elements)
                 {
                     string elementName = NormalizeName(element.Current.Name);
@@ -267,13 +279,22 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
 
                     candidates.Add(new HighlightCandidate(
                         new DesktopItemSnapshot(elementName, type?.ProgrammaticName ?? "Unknown", bounds),
-                        GetLocationScore(element, location),
+                        GetLocationScore(element, normalizedLocation),
                         elementName.Equals(needle, StringComparison.OrdinalIgnoreCase),
                         rootPriority));
                 }
+
+                // Foreground-window lookup is much faster than walking the complete desktop tree.
+                // Only fall through when it found nothing, or when the requested location was not found there.
+                bool rootProducedMatches = candidates.Count > beforeRoot;
+                bool rootProducedRequestedLocation = candidates.Skip(beforeRoot).Any(candidate => candidate.LocationScore > 0);
+                if (rootProducedMatches && (!hasLocationHint || rootProducedRequestedLocation))
+                {
+                    break;
+                }
             }
 
-            bool hasLocationMatches = !string.IsNullOrWhiteSpace(location) && candidates.Any(candidate => candidate.LocationScore > 0);
+            bool hasLocationMatches = hasLocationHint && candidates.Any(candidate => candidate.LocationScore > 0);
             IEnumerable<HighlightCandidate> ordered = candidates
                 .Where(candidate => !hasLocationMatches || candidate.LocationScore > 0)
                 .GroupBy(candidate => BuildSnapshotKey(candidate.Item.Name, candidate.Item.Bounds), StringComparer.Ordinal)
@@ -297,6 +318,11 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
         }
     }
 
+    private static string NormalizeLocation(string? location) =>
+        string.IsNullOrWhiteSpace(location)
+            ? string.Empty
+            : location.Trim().ToLowerInvariant().Replace('-', '_').Replace(' ', '_');
+
     private static int GetLocationScore(AutomationElement element, string? location)
     {
         if (string.IsNullOrWhiteSpace(location))
@@ -304,7 +330,7 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
             return 0;
         }
 
-        string normalized = location.Trim().ToLowerInvariant().Replace('-', '_').Replace(' ', '_');
+        string normalized = NormalizeLocation(location);
         StringBuilder context = new();
         AutomationElement? current = element;
         for (int depth = 0; current is not null && depth < 8; depth++)
@@ -337,6 +363,11 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
                  metadata.Contains("items view", StringComparison.Ordinal) ||
                  metadata.Contains("folderview", StringComparison.Ordinal) ||
                  metadata.Contains("listview", StringComparison.Ordinal)) ? 100 : 0,
+            "recent" or "recent_items" =>
+                metadata.Contains("recent", StringComparison.Ordinal) ||
+                (metadata.Contains("items view", StringComparison.Ordinal) &&
+                 !metadata.Contains("navigation", StringComparison.Ordinal) &&
+                 !metadata.Contains("tree", StringComparison.Ordinal)) ? 100 : 0,
             "desktop" =>
                 metadata.Contains("progman", StringComparison.Ordinal) ||
                 metadata.Contains("workerw", StringComparison.Ordinal) ||
