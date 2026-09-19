@@ -1,5 +1,123 @@
 # Phase Log
 
+## Phase 7d audio reliability hotfix - assistant silence watchdog + audible deterministic count delivery
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and tests pass.
+- **Issue:** Users reported non-audible assistant turns (partial/empty reply), while chat-only updates were insufficient for overlay-first usage.
+- **Fix:**
+  - Deterministic desktop/taskbar count answers now route through Gemini with an authoritative **"say exactly"** prompt so the response is spoken.
+  - Added assistant-audio watchdog in `SessionOrchestrator`:
+    - starts on user transcription
+    - marks success on first assistant audio chunk
+    - if no assistant audio within timeout, triggers one recovery cycle (disconnect/reconnect/re-ask request)
+    - cooldown prevents rapid recovery loops
+  - Added turn-complete silent-turn check and explicit status/diagnostic logging for recovery attempts.
+  - Pending expectation handling updated so post-deterministic drift replies are suppressed.
+- **Files changed:**
+  - `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`
+  - `src/GeminiLiveShare.Tests/Program.cs`
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln` (pass)
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` (pass)
+## Phase 7d count UX hotfix - deterministic counts now spoken via Gemini audio, plus follow-up and reliability guards
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and tests pass.
+- **Issue reported:** Count answers appeared in chat but were not spoken reliably on overlay-first usage, and follow-up count prompts still drifted.
+- **Fix:**
+  - Deterministic local count path now sends an authoritative "say exactly" prompt to Gemini so the answer is spoken, rather than only inserting a local assistant row.
+  - Added recent count-intent memory for follow-ups ("are you sure...", "just give total...") so they keep deterministic target routing.
+  - Kept no-guess reliability guard: unreliable desktop/taskbar selectors produce explicit "can't verify exact count" spoken response.
+  - Improved desktop/taskbar payloads with reliability + strategy metadata for diagnostics/tool consumers.
+- **Files changed:**
+  - `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`
+  - `src/GeminiLiveShare.Core/Desktop/DesktopAutomationService.cs`
+  - `src/GeminiLiveShare.Core/Desktop/IDesktopAutomationService.cs`
+  - `src/GeminiLiveShare.Tests/Program.cs`
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln` (pass)
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` (pass)
+## Phase 7d/7e count reliability hardening - multi-strategy desktop/taskbar counts + no-guess guard
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and tests pass.
+- **Goal:** Eliminate catastrophic wrong icon counts (especially false zero) and follow-up drift after deterministic count answers.
+- **Implementation:**
+  - **Desktop count robustness (`DesktopAutomationService`):**
+    - Added Win32 desktop host discovery strategies (`Progman` + `WorkerW` -> `SHELLDLL_DefView` -> `SysListView32`) instead of relying only on UIA Name=`FolderView`.
+    - Primary count remains shell list-view item count (`LVM_GETITEMCOUNT`) when available.
+    - Added UIA visible-item fallback for labels/positions and count fallback when shell count is unavailable.
+    - Added reliability metadata (`IsReliable`, `ReliabilityNote`, `SourceStrategy`) to desktop count snapshot.
+  - **Taskbar count robustness (`DesktopAutomationService`):**
+    - Kept `MSTaskListWClass` app-button strategy as primary.
+    - Added fallback strategy: filtered visible taskbar buttons excluding tray descendants and reserved system keywords.
+    - Added reliability metadata + source strategy and kept diagnostics breakdown (`app/tray/system`).
+  - **No-guess guard in deterministic local replies (`SessionOrchestrator`):**
+    - If count snapshot is unreliable, app now replies with explicit "cannot verify exact count" instead of returning `0`.
+    - Deterministic count path now logs strategy + reliability details in diagnostics.
+  - **Follow-up count intent handling (`SessionOrchestrator`):**
+    - Added recent count-intent memory (45 s) so prompts like "Are you sure there are 42 icons?" are treated as deterministic re-counts instead of model guesses.
+  - **Assistant-drift suppression:**
+    - After a deterministic local count reply, the next model count reply is suppressed to avoid contradictory duplicates in history.
+- **Files changed:**
+  - `src/GeminiLiveShare.Core/Desktop/IDesktopAutomationService.cs`
+  - `src/GeminiLiveShare.Core/Desktop/DesktopAutomationService.cs`
+  - `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`
+  - `src/GeminiLiveShare.Tests/Program.cs`
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln` (pass)
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` (pass)
+  - Added/updated tests:
+    - `ValidateDesktopIntentGroundingAsync`
+    - `ValidateCountFollowUpUsesRecentTargetAsync`
+    - `ValidateUnreliableCountGuardAsync`
+## Phase 7d counting hardening follow-up - deterministic local counts + scoped policies + diagnostics
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and tests pass.
+- **Goal:** Fix persistent icon-count errors by removing model inference from count answers and tightening count data sources/policies.
+- **Implementation:**
+  - `SessionOrchestrator` now handles desktop/taskbar count intents deterministically in-app:
+    - saves user turn
+    - computes count locally via desktop automation
+    - writes assistant reply directly to chat history (no model guessing)
+    - logs count diagnostics breakdown
+  - Added count-reply suppression guard so a trailing model count reply does not reintroduce contradictory history.
+  - Updated taskbar count policy/data source in `DesktopAutomationService`:
+    - app count comes from `MSTaskListWClass` buttons only
+    - excludes Start/Search/Widgets/tray/clock/overflow from final count
+    - diagnostics fields include app/tray/system button counts
+  - Updated desktop count source in `DesktopAutomationService`:
+    - primary count from shell desktop list view (`LVM_GETITEMCOUNT` on FolderView handle)
+    - UIA icon list retained for labels/positions only
+    - diagnostics fields include source/visible/hidden-or-filtered values
+  - Extended desktop automation contracts with explicit count snapshots and policy text:
+    - `DesktopIconCountSnapshot`
+    - `TaskbarItemCountSnapshot`
+- **Files changed:**
+  - `src/GeminiLiveShare.Core/Desktop/IDesktopAutomationService.cs`
+  - `src/GeminiLiveShare.Core/Desktop/DesktopAutomationService.cs`
+  - `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`
+  - `src/GeminiLiveShare.Tests/Program.cs`
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln` (pass)
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` (pass)
+## UX follow-up - export chat menu with markdown save + copy full chat
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and tests pass.
+- **Request:** When clicking **Export chat**, offer two actions: save `.md` and copy the full conversation.
+- **Implementation:**
+  - Reworked export click handler to show an action menu with:
+    - **Save as .md file** (file-save dialog limited to Markdown)
+    - **Copy full chat** (copies full markdown transcript to system clipboard)
+  - Kept existing transcript formatting and status feedback messages.
+- **Files changed:**
+  - `src/GeminiLiveShare.App/Views/MainWindow.xaml.cs`
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln` (pass)
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` (pass)
 Running record of every fix and phase verification, newest first. Each entry lists status, cause,
 implementation, files changed, verification performed, and manual test steps.
 
@@ -375,6 +493,13 @@ implementation, files changed, verification performed, and manual test steps.
   5. Repeat steps 3–4 with headphones to confirm there is no regression.
   6. Mute/unmute the mic mid-session and confirm the status message and capture resume.
 - **If interruptions still occur:** a second layer is available but not yet applied. Lower Gemini's server VAD sensitivity (`realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity = START_SENSITIVITY_LOW`) in `SetupMessage`. It was held back because it also makes genuine barge-in less sensitive.
+
+
+
+
+
+
+
 
 
 

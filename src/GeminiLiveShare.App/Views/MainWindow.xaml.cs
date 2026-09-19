@@ -316,7 +316,7 @@ public partial class MainWindow : Window
             SettingsViewModel.StatusMessage = $"Could not open {label}: {ex.Message}";
         }
     }
-    private async void OnExportSessionClick(object sender, RoutedEventArgs e)
+    private void OnExportSessionClick(object sender, RoutedEventArgs e)
     {
         ChatSessionViewModel? session = _viewModel.SelectedSession;
         if (session is null)
@@ -324,10 +324,29 @@ public partial class MainWindow : Window
             return;
         }
 
+        ContextMenu menu = new()
+        {
+            Placement = PlacementMode.Bottom,
+            PlacementTarget = sender as UIElement
+        };
+
+        MenuItem saveMarkdown = new() { Header = "Save as .md file" };
+        saveMarkdown.Click += async (_, _) => await ExportSessionMarkdownAsync(session).ConfigureAwait(true);
+
+        MenuItem copyFullChat = new() { Header = "Copy full chat" };
+        copyFullChat.Click += async (_, _) => await CopySessionTranscriptAsync(session).ConfigureAwait(true);
+
+        menu.Items.Add(saveMarkdown);
+        menu.Items.Add(copyFullChat);
+        menu.IsOpen = true;
+    }
+
+    private async Task ExportSessionMarkdownAsync(ChatSessionViewModel session)
+    {
         Microsoft.Win32.SaveFileDialog dialog = new()
         {
             Title = "Export conversation",
-            Filter = "Markdown (*.md)|*.md|Text (*.txt)|*.txt|JSON (*.json)|*.json",
+            Filter = "Markdown (*.md)|*.md",
             DefaultExt = ".md",
             AddExtension = true,
             FileName = BuildExportFileName(session.Summary)
@@ -341,17 +360,30 @@ public partial class MainWindow : Window
         try
         {
             IReadOnlyList<GeminiLiveShare.Core.Storage.ChatMessage> messages =
-                await _viewModel.GetSessionMessagesAsync(session.SessionId);
-            string extension = Path.GetExtension(dialog.FileName);
-            string output = extension.Equals(".json", StringComparison.OrdinalIgnoreCase)
-                ? BuildJsonTranscript(session, messages)
-                : BuildTextTranscript(session, messages, markdown: extension.Equals(".md", StringComparison.OrdinalIgnoreCase));
-            await File.WriteAllTextAsync(dialog.FileName, output, Encoding.UTF8);
+                await _viewModel.GetSessionMessagesAsync(session.SessionId).ConfigureAwait(true);
+            string output = BuildTextTranscript(session, messages, markdown: true);
+            await File.WriteAllTextAsync(dialog.FileName, output, Encoding.UTF8).ConfigureAwait(true);
             _viewModel.ConnectionStatus = $"Conversation exported: {dialog.FileName}";
         }
         catch (Exception ex)
         {
             _viewModel.ConnectionStatus = $"Unable to export conversation: {ex.Message}";
+        }
+    }
+
+    private async Task CopySessionTranscriptAsync(ChatSessionViewModel session)
+    {
+        try
+        {
+            IReadOnlyList<GeminiLiveShare.Core.Storage.ChatMessage> messages =
+                await _viewModel.GetSessionMessagesAsync(session.SessionId).ConfigureAwait(true);
+            string output = BuildTextTranscript(session, messages, markdown: true);
+            System.Windows.Clipboard.SetText(output);
+            _viewModel.ConnectionStatus = "Conversation copied to clipboard";
+        }
+        catch (Exception ex)
+        {
+            _viewModel.ConnectionStatus = $"Unable to copy conversation: {ex.Message}";
         }
     }
 
@@ -392,7 +424,7 @@ public partial class MainWindow : Window
             {
                 string role = message.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase) ? "Gemini" : "User";
                 DateTimeOffset local = new DateTimeOffset(DateTime.SpecifyKind(message.CreatedAtUtc, DateTimeKind.Utc), TimeSpan.Zero).ToLocalTime();
-                builder.AppendLine($"## {role} — {local:yyyy-MM-dd HH:mm:ss}");
+                builder.AppendLine($"## {role} ï¿½ {local:yyyy-MM-dd HH:mm:ss}");
                 builder.AppendLine();
                 builder.AppendLine(message.Text);
                 builder.AppendLine();
@@ -717,6 +749,7 @@ public partial class MainWindow : Window
         }
     }
 }
+
 
 
 

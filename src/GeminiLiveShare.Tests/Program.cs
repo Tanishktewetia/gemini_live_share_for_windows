@@ -28,6 +28,10 @@ await ValidateScreenShareNoticeFollowsRealFrameAsync();
 await ValidateReconnectContextRestoreAsync();
 await ValidateSentFrameDiagnosticsAsync();
 await ValidateDesktopIntentGroundingAsync();
+await ValidateCountFollowUpUsesRecentTargetAsync();
+await ValidateUnreliableCountGuardAsync();
+await ValidateZoomRegionToolAsync();
+await ValidateFreshFrameOnUserSpeechAsync();
 ValidateGlobalHotkeySettings();
 ValidatePlaybackQueueIsLossless();
 ValidateTitleFormatting();
@@ -300,6 +304,12 @@ static void ValidateWebSearchSetup()
                             Name = "get_element_under_cursor",
                             Description = "returns element under cursor",
                             Parameters = JsonSerializer.SerializeToElement(new { type = "object" })
+                        },
+                        new FunctionDeclaration
+                        {
+                            Name = "zoom_region",
+                            Description = "zoom",
+                            Parameters = JsonSerializer.SerializeToElement(new { type = "object" })
                         }
                     ]
                 }
@@ -315,6 +325,10 @@ static void ValidateWebSearchSetup()
                 tool.TryGetProperty("functionDeclarations", out JsonElement declarations) &&
                 declarations.EnumerateArray().Any(declaration => declaration.GetProperty("name").GetString() == "get_element_under_cursor")),
             "desktop function declarations were not serialized");
+        Require(tools.EnumerateArray().Any(tool =>
+                tool.TryGetProperty("functionDeclarations", out JsonElement declarations) &&
+                declarations.EnumerateArray().Any(declaration => declaration.GetProperty("name").GetString() == "zoom_region")),
+            "zoom_region function declaration was not serialized");
     }
 
     SetupMessage withoutSearch = new()
@@ -333,6 +347,12 @@ static void ValidateWebSearchSetup()
                         {
                             Name = "list_desktop_icons",
                             Description = "lists desktop icons",
+                            Parameters = JsonSerializer.SerializeToElement(new { type = "object" })
+                        },
+                        new FunctionDeclaration
+                        {
+                            Name = "zoom_region",
+                            Description = "zoom",
                             Parameters = JsonSerializer.SerializeToElement(new { type = "object" })
                         }
                     ]
@@ -370,6 +390,8 @@ static void ValidateWebSearchSetup()
         "the instruction did not require tool-first answers for fine-detail tasks");
     Require(noSearchInstruction.Contains("point at it with the mouse", StringComparison.Ordinal),
         "the instruction did not ask for pointer-based clarification when intent is unclear");
+    Require(noSearchInstruction.Contains("zoom_region", StringComparison.Ordinal),
+        "the instruction did not tell Gemini to use zoom_region for tiny non-UI text");
 
     string instructionWithFixedDate = GeminiLiveClient.BuildInstruction(
         webSearchAvailable: false,
@@ -720,25 +742,141 @@ static async Task ValidateDesktopIntentGroundingAsync()
         desktopAutomation: new FakeDesktopAutomationService(iconCount: 56, taskbarCount: 13));
 
     await orchestrator.StartAsync("test-key");
+    await orchestrator.SetScreenShareEnabledAsync(true);
+
     client.EmitTranscription("user", "How many icons are there on my desktop?");
-    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("exact number of visible desktop icons is 56", StringComparison.OrdinalIgnoreCase)),
-        "desktop icon count context was not sent");
+    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("Say exactly", StringComparison.OrdinalIgnoreCase) && text.Contains("56 desktop icons", StringComparison.OrdinalIgnoreCase)),
+        "deterministic desktop count prompt was not sent for spoken output");
 
-    int beforeAssistantMessages = history.Messages.Count(message => message.Role == "assistant");
-    client.EmitTranscription("assistant", "I see about 40 icons.");
-    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("The exact count is 56", StringComparison.OrdinalIgnoreCase)),
-        "assistant mismatch correction was not sent");
-    Require(history.Messages.Count(message => message.Role == "assistant") == beforeAssistantMessages,
-        "mismatched assistant answer was persisted instead of being corrected");
-
-    client.EmitTranscription("assistant", "There are exactly 56 icons on your desktop.");
+    client.EmitTranscription("assistant", "There are exactly 56 desktop icons.");
     await WaitUntilAsync(() => history.Messages.Any(message =>
-            message.Role == "assistant" && message.Text.Contains("56 icons", StringComparison.OrdinalIgnoreCase)),
-        "corrected assistant answer was not persisted");
+            message.Role == "assistant" && message.Text.Contains("56 desktop icons", StringComparison.OrdinalIgnoreCase)),
+        "spoken deterministic desktop count reply was not persisted");
+
+    client.EmitTranscription("user", "How many taskbar icons are there?");
+    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("13 taskbar app icons", StringComparison.OrdinalIgnoreCase)),
+        "deterministic taskbar count prompt was not sent for spoken output");
 
     await orchestrator.StopAsync();
 }
+static async Task ValidateCountFollowUpUsesRecentTargetAsync()
+{
+    FakeLiveClient client = new();
+    RecordingChatHistory history = new();
+    SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(),
+        new FakeAudioPlayback(),
+        client,
+        new FakeScreenCapture(),
+        new FakeImageProcessing(),
+        history,
+        desktopAutomation: new FakeDesktopAutomationService(iconCount: 56, taskbarCount: 13));
 
+    await orchestrator.StartAsync("test-key");
+    await orchestrator.SetScreenShareEnabledAsync(true);
+
+    client.EmitTranscription("user", "How many icons are present on my desktop excluding taskbar?");
+    await WaitUntilAsync(() => client.TextInputs.Count(text => text.Contains("56 desktop icons", StringComparison.OrdinalIgnoreCase)) == 1,
+        "initial desktop count prompt was not sent deterministically");
+
+    client.EmitTranscription("user", "Are you sure there are just 42 icons?");
+    await WaitUntilAsync(() => client.TextInputs.Count(text => text.Contains("56 desktop icons", StringComparison.OrdinalIgnoreCase)) == 2,
+        "follow-up count question did not reuse recent desktop target deterministically");
+
+    await orchestrator.StopAsync();
+}
+static async Task ValidateUnreliableCountGuardAsync()
+{
+    FakeLiveClient client = new();
+    RecordingChatHistory history = new();
+    SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(),
+        new FakeAudioPlayback(),
+        client,
+        new FakeScreenCapture(),
+        new FakeImageProcessing(),
+        history,
+        desktopAutomation: new FakeDesktopAutomationService(iconCount: 0, taskbarCount: 0, desktopReliable: false, taskbarReliable: false));
+
+    await orchestrator.StartAsync("test-key");
+    await orchestrator.SetScreenShareEnabledAsync(true);
+
+    client.EmitTranscription("user", "How many icons are there on my desktop?");
+    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("can't verify an exact desktop icon count", StringComparison.OrdinalIgnoreCase)),
+        "unreliable desktop count did not produce guarded spoken prompt");
+
+    client.EmitTranscription("assistant", "There are exactly 0 icons.");
+    await Task.Delay(120);
+    Require(!history.Messages.Any(message => message.Role == "assistant" && message.Text.Contains("exactly 0", StringComparison.OrdinalIgnoreCase)),
+        "numeric drift response was not suppressed after guarded deterministic count");
+
+    client.EmitTranscription("user", "How many number of icons are there on taskbar only?");
+    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("can't verify an exact taskbar app-icon count", StringComparison.OrdinalIgnoreCase)),
+        "unreliable taskbar count did not produce guarded spoken prompt");
+
+    await orchestrator.StopAsync();
+}
+static async Task ValidateZoomRegionToolAsync()
+{
+    FakeLiveClient client = new();
+    RecordingChatHistory history = new();
+    RecordingImageProcessing image = new();
+    StaticZoomVisionService zoom = new("The label reads: Confirm Purchase");
+    await using SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(),
+        new FakeAudioPlayback(),
+        client,
+        new FrameProducingScreenCapture(1),
+        image,
+        history,
+        desktopAutomation: new FakeDesktopAutomationService(iconCount: 56, taskbarCount: 13),
+        zoomVisionService: zoom);
+
+    await orchestrator.StartAsync("test-key");
+    await orchestrator.SetScreenShareEnabledAsync(true);
+    await WaitUntilAsync(() => client.SentInOrder.Any(item => item == "frame"),
+        "screen frame was not sent before zoom tool call");
+
+    client.EmitToolCalls([
+        new ToolCallRequest(
+            "zoom-1",
+            "zoom_region",
+            JsonSerializer.SerializeToElement(new
+            {
+                cells = new[] { "B2" },
+                question = "What does the small button text say?"
+            }))
+    ]);
+
+    await WaitUntilAsync(() => client.ToolResponses.Count > 0, "zoom_region tool response was not sent");
+    JsonElement response = client.ToolResponses[^1].Response;
+    Require(response.GetProperty("ok").GetBoolean(), "zoom_region response did not succeed");
+    Require(response.GetProperty("answer").GetString() == "The label reads: Confirm Purchase",
+        "zoom_region response did not return the zoom model answer");
+    Require(zoom.Calls == 1, "zoom model was not called exactly once");
+    Require(zoom.LastQuestion == "What does the small button text say?", "zoom question did not round-trip");
+    await orchestrator.StopAsync();
+}
+
+static async Task ValidateFreshFrameOnUserSpeechAsync()
+{
+    FakeLiveClient client = new();
+    RecordingImageProcessing image = new();
+    await using SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(),
+        new FakeAudioPlayback(),
+        client,
+        new FakeScreenCapture(),
+        image,
+        new FakeChatHistory());
+
+    await orchestrator.StartAsync("test-key");
+    await orchestrator.SetScreenShareEnabledAsync(true);
+    client.EmitTranscription("user", "please read this tiny text");
+    await WaitUntilAsync(() => image.ForceSendNextFrameCalls > 0,
+        "user speech did not force the next unchanged frame refresh");
+    await orchestrator.StopAsync();
+}
 static async Task WaitUntilAsync(Func<bool> condition, string failureMessage)
 {
     for (int attempt = 0; attempt < 100; attempt++)
@@ -817,9 +955,13 @@ file sealed class FakeLiveClient : IGeminiLiveClient
     public event EventHandler<ToolCallsEventArgs>? ToolCallsReceived;
     public bool IsConnected { get; private set; }
     public List<string> TextInputs { get; } = [];
+    public List<ToolResponsePayload> ToolResponses { get; } = [];
 
     public void EmitTranscription(string role, string text) =>
         TranscriptionReceived?.Invoke(this, new TranscriptionEventArgs(role, text));
+
+    public void EmitToolCalls(IReadOnlyList<ToolCallRequest> calls) =>
+        ToolCallsReceived?.Invoke(this, new ToolCallsEventArgs(calls));
 
     public Task ConnectAsync(string apiKey, CancellationToken cancellationToken = default)
     {
@@ -842,7 +984,11 @@ file sealed class FakeLiveClient : IGeminiLiveClient
         return Task.CompletedTask;
     }
     public Task SendAudioStreamEndAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-    public Task SendToolResponseAsync(IReadOnlyList<ToolResponsePayload> responses, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public Task SendToolResponseAsync(IReadOnlyList<ToolResponsePayload> responses, CancellationToken cancellationToken = default)
+    {
+        ToolResponses.AddRange(responses);
+        return Task.CompletedTask;
+    }
     public Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
         IsConnected = false;
@@ -863,7 +1009,6 @@ file sealed class FakeLiveClient : IGeminiLiveClient
 
     public void Interrupt() => Interrupted?.Invoke(this, EventArgs.Empty);
 }
-
 file sealed class FakeScreenCapture : IScreenCaptureService
 {
     public int RunCount { get; private set; }
@@ -901,18 +1046,51 @@ file sealed class EncodingImageProcessing : IImageProcessingService
 {
     public int JpegQuality { get; set; } = 90;
     public void ResetChangeDetection() { }
+    public void ForceSendNextFrame() { }
     public Task<FrameEncodeResult> EncodeForGeminiAsync(SoftwareBitmap frame, CancellationToken cancellationToken) =>
-        Task.FromResult(FrameEncodeResult.Encoded([0xFF, 0xD8, 0xFF]));
+        Task.FromResult(FrameEncodeResult.Encoded([0xFF, 0xD8, 0xFF], fullResolutionJpeg: [0xFF, 0xD8, 0xFF], fullResolutionWidth: 4, fullResolutionHeight: 4));
 }
 
 file sealed class FakeImageProcessing : IImageProcessingService
 {
     public int JpegQuality { get; set; } = 90;
     public void ResetChangeDetection() { }
+    public void ForceSendNextFrame() { }
     public Task<FrameEncodeResult> EncodeForGeminiAsync(SoftwareBitmap frame, CancellationToken cancellationToken) =>
         Task.FromResult(FrameEncodeResult.Dropped);
 }
 
+file sealed class RecordingImageProcessing : IImageProcessingService
+{
+    public int JpegQuality { get; set; } = 90;
+    public int ForceSendNextFrameCalls { get; private set; }
+    public void ResetChangeDetection() { }
+    public void ForceSendNextFrame() => ForceSendNextFrameCalls++;
+
+    public Task<FrameEncodeResult> EncodeForGeminiAsync(SoftwareBitmap frame, CancellationToken cancellationToken)
+    {
+        using SKBitmap bitmap = new(frame.PixelWidth, frame.PixelHeight, SKColorType.Bgra8888, SKAlphaType.Opaque);
+        using SKCanvas canvas = new(bitmap);
+        canvas.Clear(SKColors.White);
+        using SKImage image = SKImage.FromBitmap(bitmap);
+        using SKData encoded = image.Encode(SKEncodedImageFormat.Jpeg, 90);
+        byte[] jpeg = encoded.ToArray();
+        return Task.FromResult(FrameEncodeResult.Encoded(jpeg, fullResolutionJpeg: jpeg, fullResolutionWidth: frame.PixelWidth, fullResolutionHeight: frame.PixelHeight));
+    }
+}
+
+file sealed class StaticZoomVisionService(string answer) : IZoomVisionService
+{
+    public int Calls { get; private set; }
+    public string? LastQuestion { get; private set; }
+
+    public Task<string> AnalyzeAsync(string apiKey, byte[] croppedJpeg, string question, CancellationToken cancellationToken = default)
+    {
+        Calls++;
+        LastQuestion = question;
+        return Task.FromResult(answer);
+    }
+}
 file sealed class SeededChatHistory(IReadOnlyList<ChatMessage> messages) : IChatHistoryRepository
 {
     public event EventHandler<ChatMessageAddedEventArgs>? MessageAdded;
@@ -965,7 +1143,11 @@ file sealed class RecordingChatHistory : IChatHistoryRepository
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
-file sealed class FakeDesktopAutomationService(int iconCount, int taskbarCount) : IDesktopAutomationService
+file sealed class FakeDesktopAutomationService(
+    int iconCount,
+    int taskbarCount,
+    bool desktopReliable = true,
+    bool taskbarReliable = true) : IDesktopAutomationService
 {
     public DesktopElementSnapshot? GetElementUnderCursor() =>
         new("Codex", "ControlType.ListItem", ["ControlType.Pane:Desktop"], new System.Drawing.Rectangle(100, 100, 80, 30));
@@ -980,10 +1162,39 @@ file sealed class FakeDesktopAutomationService(int iconCount, int taskbarCount) 
             .Select(index => new DesktopItemSnapshot($"Icon {index}", "ControlType.ListItem", new System.Drawing.Rectangle((index % 10) * 10, (index / 10) * 10, 10, 10)))
             .ToArray();
 
+    public DesktopIconCountSnapshot GetDesktopIconCount()
+    {
+        IReadOnlyList<DesktopItemSnapshot> items = ListDesktopIcons();
+        return new DesktopIconCountSnapshot(
+            Count: iconCount,
+            SourceItemCount: iconCount,
+            VisibleUiItemCount: items.Count,
+            HiddenOrFilteredCount: Math.Max(0, iconCount - items.Count),
+            IsReliable: desktopReliable,
+            ReliabilityNote: desktopReliable ? "ok" : "desktop host not found",
+            SourceStrategy: desktopReliable ? "test-shell-count" : "test-unreliable",
+            SourcePolicy: "Desktop policy: shell FolderView item count when available; otherwise visible UIA list items. UIA remains the source for labels/positions.",
+            VisibleItems: items);
+    }
+
+    public TaskbarItemCountSnapshot GetTaskbarItemCount()
+    {
+        IReadOnlyList<DesktopItemSnapshot> items = ListTaskbarItems();
+        return new TaskbarItemCountSnapshot(
+            Count: taskbarCount,
+            AppButtons: taskbarCount,
+            TrayButtons: 7,
+            SystemButtons: 5,
+            IsReliable: taskbarReliable,
+            ReliabilityNote: taskbarReliable ? "ok" : "taskbar host not found",
+            SourceStrategy: taskbarReliable ? "test-tasklist" : "test-unreliable",
+            SourcePolicy: "Taskbar policy: app buttons only; Start/Search/Widgets/system tray/clock/overflow excluded.",
+            AppItems: items);
+    }
+
     public FocusedWindowSnapshot? GetFocusedWindow() =>
         new("explorer", "Desktop", null);
 }
-
 file sealed class FakeChatHistory : IChatHistoryRepository
 {
     public event EventHandler<ChatMessageAddedEventArgs>? MessageAdded { add { } remove { } }
@@ -998,6 +1209,22 @@ file sealed class FakeChatHistory : IChatHistoryRepository
     public Task DeleteSessionAsync(string sessionId) => Task.CompletedTask;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

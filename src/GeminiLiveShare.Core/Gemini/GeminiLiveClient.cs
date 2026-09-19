@@ -67,6 +67,41 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                 properties = new { },
                 additionalProperties = false
             })
+        },
+        new FunctionDeclaration
+        {
+            Name = "zoom_region",
+            Description = "Inspect a zoomed crop from the most recent full-resolution sanitized screenshot. Use either grid cells (A1-D4) or an explicit box with x,y,width,height plus a question.",
+            Parameters = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new
+                {
+                    cells = new
+                    {
+                        type = "array",
+                        items = new { type = "string" },
+                        minItems = 1,
+                        maxItems = 6
+                    },
+                    box = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            x = new { type = "integer" },
+                            y = new { type = "integer" },
+                            width = new { type = "integer" },
+                            height = new { type = "integer" }
+                        },
+                        required = new[] { "x", "y", "width", "height" },
+                        additionalProperties = false
+                    },
+                    question = new { type = "string" }
+                },
+                required = new[] { "question" },
+                additionalProperties = false
+            })
         }
     ];
 
@@ -110,7 +145,8 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         "ACCURACY AND RELIABILITY RULES:\n" +
         "- Never guess. If evidence is weak, partial or blurry, say you cannot see clearly.\n" +
         "- For pointer location, counting items, reading small text, or identifying icons/controls, use an available tool first.\n" +
-        "- Available desktop tools include get_element_under_cursor, list_taskbar_items, list_desktop_icons, and get_focused_window.\n" +
+        "- Available desktop tools include get_element_under_cursor, list_taskbar_items, list_desktop_icons, get_focused_window, and zoom_region.\n" +
+        "- For details UI Automation cannot access (tiny text in images, scanned PDFs), call zoom_region and specify either grid cells A1-D4 or a box.\n" +
         "- If no tool is available for that request, say you cannot see it clearly from the screenshot instead of inventing an answer.\n" +
         "- If user intent is unclear, ask a brief clarifying question; if the target on screen is unclear, ask the user to point at it with the mouse.\n\n" +
         "WHEN SCREENSHOTS ARE PRESENT (the images show the user's primary monitor):\n" +
@@ -672,3 +708,4 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         return $"Gemini Live API server closed the connection ({statusText}): {safeDescription}";
     }
 }
+

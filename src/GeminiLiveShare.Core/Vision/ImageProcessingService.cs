@@ -26,6 +26,7 @@ public sealed class ImageProcessingService : IImageProcessingService
     private readonly object _changeLock = new();
     private byte[]? _lastSentThumbnail;
     private long _lastSentTimestamp;
+    private bool _forceSendNextFrame;
 
     private readonly ICredentialBlurService _credentialBlur;
     private readonly IOcrCredentialDetector _ocrCredentialDetector;
@@ -48,6 +49,15 @@ public sealed class ImageProcessingService : IImageProcessingService
         lock (_changeLock)
         {
             _lastSentThumbnail = null;
+            _forceSendNextFrame = false;
+        }
+    }
+
+    public void ForceSendNextFrame()
+    {
+        lock (_changeLock)
+        {
+            _forceSendNextFrame = true;
         }
     }
 
@@ -129,11 +139,14 @@ public sealed class ImageProcessingService : IImageProcessingService
 
         SKBitmap output = resized ?? source;
         byte[] encodedBytes;
+        byte[] fullResolutionJpeg;
         try
         {
-            using SKImage image = SKImage.FromBitmap(output);
-            using SKData encodedImage = image.Encode(SKEncodedImageFormat.Jpeg, Math.Clamp(JpegQuality, 40, 100));
-            encodedBytes = encodedImage.ToArray();
+            encodedBytes = EncodeJpeg(output, Math.Clamp(JpegQuality, 40, 100));
+            // zoom_region needs a crop from the exact full-resolution sanitized frame, not the upload-sized frame.
+            fullResolutionJpeg = ReferenceEquals(output, source)
+                ? encodedBytes
+                : EncodeJpeg(source, Math.Clamp(JpegQuality, 40, 100));
         }
         finally
         {
@@ -150,16 +163,29 @@ public sealed class ImageProcessingService : IImageProcessingService
         {
             _lastSentThumbnail = thumbnail;
             _lastSentTimestamp = Stopwatch.GetTimestamp();
+            _forceSendNextFrame = false;
         }
 
-        return FrameEncodeResult.Encoded(encodedBytes);
+        return FrameEncodeResult.Encoded(
+            encodedBytes,
+            fullResolutionJpeg,
+            source.Width,
+            source.Height);
+    }
+
+    private static byte[] EncodeJpeg(SKBitmap bitmap, int quality)
+    {
+        using SKImage image = SKImage.FromBitmap(bitmap);
+        using SKData encodedImage = image.Encode(SKEncodedImageFormat.Jpeg, quality);
+        return encodedImage.ToArray();
     }
 
     private bool ShouldSend(byte[] thumbnail)
     {
         lock (_changeLock)
         {
-            if (_lastSentThumbnail is null ||
+            if (_forceSendNextFrame ||
+                _lastSentThumbnail is null ||
                 Stopwatch.GetElapsedTime(_lastSentTimestamp) >= UnchangedFrameRefreshInterval)
             {
                 return true;

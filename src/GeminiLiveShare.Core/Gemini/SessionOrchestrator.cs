@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Windows.Graphics.Imaging;
 using System.Threading.Channels;
+using SkiaSharp;
 
 namespace GeminiLiveShare.Core.Gemini;
 
@@ -39,6 +40,11 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private readonly IDiagnosticsDebugSettings _diagnosticsSettings;
     private readonly ConversationStateRebuilder _conversationStateRebuilder;
     private readonly IDesktopAutomationService _desktopAutomation;
+    private readonly IZoomVisionService _zoomVisionService;
+    private readonly object _latestFrameLock = new();
+    private byte[]? _latestFullResolutionJpeg;
+    private int _latestFrameWidth;
+    private int _latestFrameHeight;
     private long _micChunksCaptured;
     private long _micChunksDropped;
     private long _framesSent;
@@ -67,8 +73,19 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private bool _hasReconnected;
     private bool _browserPageContextAttached;
     private readonly object _desktopExpectationLock = new();
+    private readonly object _recentCountLock = new();
     private PendingDesktopExpectation? _pendingDesktopExpectation;
+    private RecentCountContext? _recentCountContext;
+    private readonly object _assistantWatchdogLock = new();
+    private CancellationTokenSource? _assistantWatchdogCancellation;
+    private string? _pendingAudibleReplyUserPrompt;
+    private bool _assistantAudioReceivedForPendingPrompt;
+    private DateTimeOffset _lastSilentRecoveryUtc = DateTimeOffset.MinValue;
     private static readonly Regex NumberRegex = new(@"\b(\d+)\b", RegexOptions.Compiled);
+    private static readonly Regex ZoomCellRegex = new(@"^[A-D](?:[1-4])$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly TimeSpan RecentCountIntentLifetime = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan AssistantAudioWatchdogDelay = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan AssistantSilentRecoveryCooldown = TimeSpan.FromSeconds(12);
 
     internal const string ScreenShareOnNotice =
         "App notice (not spoken by the user): screen sharing is now ON. You are receiving screenshots of the user's " +
@@ -84,12 +101,14 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         BrowserAgentBridge? browserAgentBridge = null,
         ISessionDiagnostics? diagnostics = null,
         IDiagnosticsDebugSettings? diagnosticsSettings = null,
-        IDesktopAutomationService? desktopAutomation = null)
+        IDesktopAutomationService? desktopAutomation = null,
+        IZoomVisionService? zoomVisionService = null)
     {
         _diagnostics = diagnostics ?? NullSessionDiagnostics.Instance;
         _diagnosticsSettings = diagnosticsSettings ?? new DiagnosticsDebugSettings();
         _conversationStateRebuilder = new ConversationStateRebuilder(chatHistory, browserAgentBridge);
         _desktopAutomation = desktopAutomation ?? new DesktopAutomationService();
+        _zoomVisionService = zoomVisionService ?? new GeminiZoomVisionService();
         StatusChanged += (_, status) => _diagnostics.Log($"status: {status}");
         _audioCapture = audioCapture;
         _audioPlayback = audioPlayback;
@@ -165,6 +184,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 _hasReconnected = false;
                 _browserPageContextAttached = false;
                 ClearPendingDesktopExpectation();
+                ClearRecentCountIntent();
+                ClearLatestZoomFrame();
                 Interlocked.Exchange(ref _restoreConversationStatePending, 0);
                 await _liveClient.ConnectAsync(apiKey, cancellationToken).ConfigureAwait(false);
                 _audioPlayback.Start();
@@ -216,6 +237,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
             SetRunningState(false);
             StopSpeaking();
+            CancelAssistantAudioWatchdog();
             _microphoneDesired = false;
             _screenShareDesired = false;
             SetMicrophoneState(false);
@@ -233,6 +255,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             _hasReconnected = false;
             _browserPageContextAttached = false;
             ClearPendingDesktopExpectation();
+            ClearRecentCountIntent();
+            ClearLatestZoomFrame();
             Interlocked.Exchange(ref _restoreConversationStatePending, 0);
             LogDiagnosticsSummary("session end");
             StatusChanged?.Invoke(this, "Conversation stopped");
@@ -312,6 +336,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             // Publish the off state immediately. StopVideoSenderAsync still waits for the
             // capture loop to unwind, but no new frame is allowed past this point.
             SetScreenShareState(false);
+            ClearLatestZoomFrame();
             await StopVideoSenderAsync().ConfigureAwait(false);
             if (_liveClient.IsConnected && !string.IsNullOrWhiteSpace(_apiKey))
             {
@@ -403,12 +428,17 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
+        MarkAssistantAudioArrived();
         _audioPlayback.Play(audio);
         SetSpeakingState(true);
         RestartSpeakingSilenceTimer();
     }
 
-    private void OnTurnCompleted(object? sender, EventArgs e) => _audioPlayback.CompleteResponse();
+    private void OnTurnCompleted(object? sender, EventArgs e)
+    {
+        _audioPlayback.CompleteResponse();
+        _ = RecoverSilentAssistantTurnIfNeededAsync("turn-complete-without-audio");
+    }
 
     private void OnInterrupted(object? sender, EventArgs e)
     {
@@ -432,12 +462,35 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         {
             if (e.Role.Equals("user", StringComparison.OrdinalIgnoreCase))
             {
+                ClearPendingDesktopExpectation();
+                ForceFreshFrameAfterUserSpeech();
+                BeginAssistantAudioWatchdog(e.Text);
+                await _chatHistory.AddAsync(new ChatMessage
+                {
+                    SessionId = sessionId,
+                    Role = e.Role,
+                    Text = e.Text,
+                    CreatedAtUtc = DateTime.UtcNow
+                }).ConfigureAwait(false);
+
+                if (await TryHandleDeterministicCountIntentAsync(sessionId, e.Text).ConfigureAwait(false))
+                {
+                    return;
+                }
+
                 await SendDesktopIntentContextIfNeededAsync(e.Text).ConfigureAwait(false);
+                if (IsPageContextRequest(e.Text))
+                {
+                    await SendBrowserPageContextAsync().ConfigureAwait(false);
+                }
+
+                return;
             }
-            else if (e.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase) &&
-                     await ShouldRequestAssistantCorrectionAsync(e.Text).ConfigureAwait(false))
+
+            if (e.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase) &&
+                await ShouldRequestAssistantCorrectionAsync(e.Text).ConfigureAwait(false))
             {
-                // Ignore this low-confidence assistant text in history and force a corrected reply.
+                // Ignore this low-confidence or duplicate assistant text and force/suppress correction.
                 return;
             }
 
@@ -448,62 +501,194 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 Text = e.Text,
                 CreatedAtUtc = DateTime.UtcNow
             }).ConfigureAwait(false);
-
-            if (e.Role.Equals("user", StringComparison.OrdinalIgnoreCase) && IsPageContextRequest(e.Text))
-            {
-                await SendBrowserPageContextAsync().ConfigureAwait(false);
-            }
         }
         catch (Exception ex)
         {
             StatusChanged?.Invoke(this, $"Unable to save chat transcript: {ex.Message}");
         }
     }
-
-    private async Task SendDesktopIntentContextIfNeededAsync(string userText)
+    private void ForceFreshFrameAfterUserSpeech()
     {
-        if (!IsConnected || !TryBuildDesktopIntentContext(userText, out string context, out PendingDesktopExpectation? expectation))
+        if (!_screenShareDesired || !IsScreenShareOn)
         {
             return;
         }
 
-        if (expectation is not null)
+        _imageProcessing.ForceSendNextFrame();
+    }
+    private async Task SendDesktopIntentContextIfNeededAsync(string userText)
+    {
+        if (!IsConnected || !TryBuildDesktopIntentContext(userText, out string context))
         {
-            SetPendingDesktopExpectation(expectation);
+            return;
         }
 
         await _liveClient.SendTextAsync(context, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
         StatusChanged?.Invoke(this, "Desktop automation context sent (authoritative)");
     }
 
-    private bool TryBuildDesktopIntentContext(string userText, out string context, out PendingDesktopExpectation? expectation)
+    private async Task<bool> TryHandleDeterministicCountIntentAsync(string sessionId, string userText)
+    {
+        if (!IsScreenShareOn)
+        {
+            return false;
+        }
+
+        if (!TryResolveCountIntentTarget(userText, out CountIntentTarget target))
+        {
+            return false;
+        }
+
+        CountReplyOutcome outcome = target switch
+        {
+            CountIntentTarget.DesktopIcons => BuildDesktopCountReply(),
+            CountIntentTarget.TaskbarAppIcons => BuildTaskbarCountReply(),
+            _ => throw new InvalidOperationException("Unsupported count intent target.")
+        };
+
+        // Speak the deterministic answer through Gemini audio (overlay-first UX) instead of only writing chat text.
+        string speakPrompt =
+            "Authoritative app result (highest priority). Reply in exactly one short sentence and speak it aloud. " +
+            "Do not add extra wording. Say exactly: \"" + outcome.Reply.Replace("\"", "'") + "\"";
+        await _liveClient.SendTextAsync(speakPrompt, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+
+        if (outcome.Expectation is not null)
+        {
+            SetPendingDesktopExpectation(outcome.Expectation);
+        }
+
+        SetRecentCountIntent(target);
+        _diagnostics.Log(outcome.Diagnostics);
+        StatusChanged?.Invoke(this, "Count sent to Gemini for spoken deterministic reply");
+        return true;
+    }
+    private CountReplyOutcome BuildDesktopCountReply()
+    {
+        DesktopIconCountSnapshot count = _desktopAutomation.GetDesktopIconCount();
+        if (!count.IsReliable)
+        {
+            return new CountReplyOutcome(
+                Reply:
+                    "I can't verify an exact desktop icon count right now because desktop automation could not read FolderView reliably. " +
+                    "Please keep the desktop unobstructed and ask again.",
+                Diagnostics:
+                    $"count desktop: unreliable strategy={count.SourceStrategy}, source={count.SourceItemCount}, visible-ui={count.VisibleUiItemCount}, hidden-or-filtered={count.HiddenOrFilteredCount}, reason={count.ReliabilityNote}",
+                Expectation: new PendingDesktopExpectation(
+                    DesktopExpectationType.DesktopIconCount,
+                    count.Count,
+                    null,
+                    DateTimeOffset.UtcNow,
+                    -1));
+        }
+
+        return new CountReplyOutcome(
+            Reply:
+                $"There are exactly {count.Count} desktop icons. " +
+                "Policy: count all items in desktop FolderView (shell item count when available, visible UIA list items otherwise).",
+            Diagnostics:
+                $"count desktop: reliable=yes, strategy={count.SourceStrategy}, source={count.SourceItemCount}, visible-ui={count.VisibleUiItemCount}, hidden-or-filtered={count.HiddenOrFilteredCount}, final={count.Count}",
+            Expectation: new PendingDesktopExpectation(
+                DesktopExpectationType.DesktopIconCount,
+                count.Count,
+                null,
+                DateTimeOffset.UtcNow,
+                0));
+    }
+
+    private CountReplyOutcome BuildTaskbarCountReply()
+    {
+        TaskbarItemCountSnapshot count = _desktopAutomation.GetTaskbarItemCount();
+        if (!count.IsReliable)
+        {
+            return new CountReplyOutcome(
+                Reply:
+                    "I can't verify an exact taskbar app-icon count right now because taskbar app buttons were not detected reliably. " +
+                    "Please ask again in a moment.",
+                Diagnostics:
+                    $"count taskbar: unreliable strategy={count.SourceStrategy}, app-buttons={count.AppButtons}, tray-buttons={count.TrayButtons}, system-buttons={count.SystemButtons}, reason={count.ReliabilityNote}",
+                Expectation: new PendingDesktopExpectation(
+                    DesktopExpectationType.TaskbarItemCount,
+                    count.Count,
+                    null,
+                    DateTimeOffset.UtcNow,
+                    -1));
+        }
+
+        return new CountReplyOutcome(
+            Reply:
+                $"There are exactly {count.Count} taskbar app icons. " +
+                "Policy: count app buttons only; Start, Search, Widgets, system tray, clock, and overflow are excluded.",
+            Diagnostics:
+                $"count taskbar: reliable=yes, strategy={count.SourceStrategy}, app-buttons={count.AppButtons}, tray-buttons={count.TrayButtons}, system-buttons={count.SystemButtons}, final={count.Count}",
+            Expectation: new PendingDesktopExpectation(
+                DesktopExpectationType.TaskbarItemCount,
+                count.Count,
+                null,
+                DateTimeOffset.UtcNow,
+                0));
+    }
+    private bool TryResolveCountIntentTarget(string userText, out CountIntentTarget target)
     {
         string normalized = userText.Trim().ToLowerInvariant();
-        expectation = null;
+        bool containsDesktop = normalized.Contains("desktop", StringComparison.Ordinal);
+        bool containsTaskbar = normalized.Contains("taskbar", StringComparison.Ordinal);
+        bool containsIconCue = normalized.Contains("icon", StringComparison.Ordinal) ||
+            normalized.Contains("icons", StringComparison.Ordinal) ||
+            normalized.Contains("app", StringComparison.Ordinal) ||
+            normalized.Contains("item", StringComparison.Ordinal);
+        bool countCue = normalized.Contains("how many", StringComparison.Ordinal) ||
+            normalized.Contains("count", StringComparison.Ordinal) ||
+            normalized.Contains("number", StringComparison.Ordinal) ||
+            normalized.Contains("total", StringComparison.Ordinal);
+        bool followUpCue = normalized.Contains("are you sure", StringComparison.Ordinal) ||
+            normalized.Contains("just tell", StringComparison.Ordinal) ||
+            normalized.Contains("again", StringComparison.Ordinal) ||
+            normalized.Contains("still", StringComparison.Ordinal) ||
+            normalized.Contains("only", StringComparison.Ordinal);
 
-        if (normalized.Contains("how many") && normalized.Contains("desktop") && normalized.Contains("icon"))
+        if (!countCue && !followUpCue)
         {
-            IReadOnlyList<DesktopItemSnapshot> icons = _desktopAutomation.ListDesktopIcons();
-            int count = icons.Count;
-            expectation = new PendingDesktopExpectation(DesktopExpectationType.DesktopIconCount, count, null, DateTimeOffset.UtcNow, 0);
-            context =
-                "Authoritative desktop automation result (high priority): " +
-                $"The exact number of visible desktop icons is {count}. " +
-                "For this question, answer with that exact number only. Do not estimate or round.";
+            target = default;
+            return false;
+        }
+
+        if (containsTaskbar && normalized.Contains("only", StringComparison.Ordinal))
+        {
+            target = CountIntentTarget.TaskbarAppIcons;
             return true;
         }
 
-        if (normalized.Contains("how many") && normalized.Contains("taskbar") && normalized.Contains("icon"))
+        if (containsDesktop && normalized.Contains("excluding taskbar", StringComparison.Ordinal))
         {
-            IReadOnlyList<DesktopItemSnapshot> items = _desktopAutomation.ListTaskbarItems();
-            int count = items.Count;
-            expectation = new PendingDesktopExpectation(DesktopExpectationType.TaskbarItemCount, count, null, DateTimeOffset.UtcNow, 0);
-            context =
-                "Authoritative desktop automation result (high priority): " +
-                $"The exact number of visible taskbar items is {count}. " +
-                "For this question, answer with that exact number only. Do not estimate or round.";
+            target = CountIntentTarget.DesktopIcons;
             return true;
         }
+
+        if (containsDesktop && !containsTaskbar)
+        {
+            target = CountIntentTarget.DesktopIcons;
+            return true;
+        }
+
+        if (containsTaskbar && !containsDesktop)
+        {
+            target = CountIntentTarget.TaskbarAppIcons;
+            return true;
+        }
+
+        if ((containsDesktop || containsTaskbar || containsIconCue || followUpCue) &&
+            TryGetRecentCountIntent(out CountIntentTarget recent))
+        {
+            target = recent;
+            return true;
+        }
+
+        target = default;
+        return false;
+    }
+    private bool TryBuildDesktopIntentContext(string userText, out string context)
+    {
+        string normalized = userText.Trim().ToLowerInvariant();
 
         if (normalized.Contains("where") && (normalized.Contains("pointer") || normalized.Contains("cursor")))
         {
@@ -537,6 +722,14 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         if (expectation.Type is DesktopExpectationType.DesktopIconCount or DesktopExpectationType.TaskbarItemCount)
         {
+            // correctionsIssued < 0 means the app already answered deterministically from local automation;
+            // suppress the next model count reply to avoid contradictory duplicates in history.
+            if (expectation.CorrectionsIssued < 0)
+            {
+                ClearPendingDesktopExpectation();
+                return true;
+            }
+
             Match match = NumberRegex.Match(assistantText);
             if (!match.Success || !int.TryParse(match.Groups[1].Value, out int actual) || actual != expectation.ExpectedCount)
             {
@@ -564,7 +757,6 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         ClearPendingDesktopExpectation();
         return false;
     }
-
     private void SetPendingDesktopExpectation(PendingDesktopExpectation expectation)
     {
         lock (_desktopExpectationLock)
@@ -589,6 +781,145 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         }
     }
 
+    private void SetRecentCountIntent(CountIntentTarget target)
+    {
+        lock (_recentCountLock)
+        {
+            _recentCountContext = new RecentCountContext(target, DateTimeOffset.UtcNow);
+        }
+    }
+
+    private bool TryGetRecentCountIntent(out CountIntentTarget target)
+    {
+        lock (_recentCountLock)
+        {
+            if (_recentCountContext is null ||
+                DateTimeOffset.UtcNow - _recentCountContext.TimestampUtc > RecentCountIntentLifetime)
+            {
+                _recentCountContext = null;
+                target = default;
+                return false;
+            }
+
+            target = _recentCountContext.Target;
+            return true;
+        }
+    }
+
+    private void ClearRecentCountIntent()
+    {
+        lock (_recentCountLock)
+        {
+            _recentCountContext = null;
+        }
+    }
+
+    private void BeginAssistantAudioWatchdog(string userPrompt)
+    {
+        CancellationTokenSource watchdog = new();
+        lock (_assistantWatchdogLock)
+        {
+            _assistantWatchdogCancellation?.Cancel();
+            _assistantWatchdogCancellation?.Dispose();
+            _assistantWatchdogCancellation = watchdog;
+            _pendingAudibleReplyUserPrompt = userPrompt;
+            _assistantAudioReceivedForPendingPrompt = false;
+        }
+
+        _ = WatchForMissingAssistantAudioAsync(watchdog);
+    }
+
+    private void MarkAssistantAudioArrived()
+    {
+        lock (_assistantWatchdogLock)
+        {
+            _assistantAudioReceivedForPendingPrompt = true;
+            _assistantWatchdogCancellation?.Cancel();
+            _assistantWatchdogCancellation?.Dispose();
+            _assistantWatchdogCancellation = null;
+            _pendingAudibleReplyUserPrompt = null;
+        }
+    }
+
+    private void CancelAssistantAudioWatchdog()
+    {
+        lock (_assistantWatchdogLock)
+        {
+            _assistantWatchdogCancellation?.Cancel();
+            _assistantWatchdogCancellation?.Dispose();
+            _assistantWatchdogCancellation = null;
+            _pendingAudibleReplyUserPrompt = null;
+            _assistantAudioReceivedForPendingPrompt = false;
+        }
+    }
+
+    private async Task WatchForMissingAssistantAudioAsync(CancellationTokenSource watchdog)
+    {
+        try
+        {
+            await Task.Delay(AssistantAudioWatchdogDelay, watchdog.Token).ConfigureAwait(false);
+            await RecoverSilentAssistantTurnIfNeededAsync("no-audio-watchdog").ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task RecoverSilentAssistantTurnIfNeededAsync(string reason)
+    {
+        string? pendingPrompt;
+        lock (_assistantWatchdogLock)
+        {
+            if (_assistantAudioReceivedForPendingPrompt || !IsRunning || !IsConnected)
+            {
+                return;
+            }
+
+            if (DateTimeOffset.UtcNow - _lastSilentRecoveryUtc < AssistantSilentRecoveryCooldown)
+            {
+                return;
+            }
+
+            pendingPrompt = _pendingAudibleReplyUserPrompt;
+            _lastSilentRecoveryUtc = DateTimeOffset.UtcNow;
+        }
+
+        if (string.IsNullOrWhiteSpace(pendingPrompt) || string.IsNullOrWhiteSpace(_apiKey))
+        {
+            return;
+        }
+
+        StatusChanged?.Invoke(this, "No assistant audio detected; recovering session...");
+        _diagnostics.Log($"audio watchdog: recovering from silent assistant turn ({reason})");
+
+        await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (!IsRunning || string.IsNullOrWhiteSpace(_apiKey))
+            {
+                return;
+            }
+
+            await StopMediaAsync().ConfigureAwait(false);
+            await _liveClient.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
+            await _liveClient.ConnectAsync(_apiKey!, CancellationToken.None).ConfigureAwait(false);
+            StartMedia();
+            await _liveClient.SendTextAsync(
+                "The previous response was not audible to the user. " +
+                "Please answer now in one short sentence and speak it clearly. User request: " + pendingPrompt,
+                _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+            StatusChanged?.Invoke(this, "Recovered: asked Gemini to repeat audibly");
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke(this, $"Audio recovery failed: {ex.Message}");
+            _diagnostics.Log($"audio watchdog: recovery failed: {ex.Message}");
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
     private void OnBrowserAgentEventReceived(object? sender, BrowserAgentEventArgs e)
     {
         if (e.Payload.TryGetProperty("code", out JsonElement code) &&
@@ -648,30 +979,29 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             List<ToolResponsePayload> responses = new(e.Calls.Count);
             foreach (ToolCallRequest call in e.Calls)
             {
-                responses.Add(new ToolResponsePayload(call.Id, call.Name, ExecuteDesktopToolCall(call)));
+                JsonElement response = await ExecuteToolCallAsync(call, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+                responses.Add(new ToolResponsePayload(call.Id, call.Name, response));
             }
 
             await _liveClient.SendToolResponseAsync(responses, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
-            StatusChanged?.Invoke(this, $"Desktop tool response sent ({responses.Count} call(s))");
+            StatusChanged?.Invoke(this, $"Tool response sent ({responses.Count} call(s))");
         }
         catch (Exception ex)
         {
-            StatusChanged?.Invoke(this, $"Unable to execute desktop tool call: {ex.Message}");
+            StatusChanged?.Invoke(this, $"Unable to execute tool call: {ex.Message}");
         }
     }
 
-    private JsonElement ExecuteDesktopToolCall(ToolCallRequest call)
+    private async Task<JsonElement> ExecuteToolCallAsync(ToolCallRequest call, CancellationToken cancellationToken)
     {
         try
         {
-            return call.Name switch
+            if (call.Name.Equals("zoom_region", StringComparison.Ordinal))
             {
-                "get_element_under_cursor" => JsonSerializer.SerializeToElement(BuildElementUnderCursorPayload()),
-                "list_taskbar_items" => JsonSerializer.SerializeToElement(BuildItemsPayload(_desktopAutomation.ListTaskbarItems())),
-                "list_desktop_icons" => JsonSerializer.SerializeToElement(BuildItemsPayload(_desktopAutomation.ListDesktopIcons())),
-                "get_focused_window" => JsonSerializer.SerializeToElement(BuildFocusedWindowPayload()),
-                _ => JsonSerializer.SerializeToElement(new { ok = false, error = $"Unknown desktop tool: {call.Name}" })
-            };
+                return await ExecuteZoomRegionToolCallAsync(call, cancellationToken).ConfigureAwait(false);
+            }
+
+            return ExecuteDesktopToolCall(call);
         }
         catch (Exception ex)
         {
@@ -679,6 +1009,244 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         }
     }
 
+    private JsonElement ExecuteDesktopToolCall(ToolCallRequest call) => call.Name switch
+    {
+        "get_element_under_cursor" => JsonSerializer.SerializeToElement(BuildElementUnderCursorPayload()),
+        "list_taskbar_items" => JsonSerializer.SerializeToElement(BuildTaskbarItemsPayload()),
+        "list_desktop_icons" => JsonSerializer.SerializeToElement(BuildDesktopIconsPayload()),
+        "get_focused_window" => JsonSerializer.SerializeToElement(BuildFocusedWindowPayload()),
+        _ => JsonSerializer.SerializeToElement(new { ok = false, error = $"Unknown tool: {call.Name}" })
+    };
+
+    private async Task<JsonElement> ExecuteZoomRegionToolCallAsync(ToolCallRequest call, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_apiKey))
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = "zoom_region is unavailable before session startup." });
+        }
+
+        if (!TryParseZoomRequest(call.Args, out ZoomRequest request, out string parseError))
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = parseError });
+        }
+
+        if (!TryGetLatestZoomFrame(out byte[] fullResolutionJpeg, out int frameWidth, out int frameHeight))
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = "No screenshot is available yet. Ask the user to keep screen share on and try again." });
+        }
+
+        if (!TryResolveZoomBounds(request, frameWidth, frameHeight, out SKRectI bounds, out string boundsError))
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = boundsError });
+        }
+
+        byte[] croppedJpeg;
+        try
+        {
+            croppedJpeg = CropJpeg(fullResolutionJpeg, bounds);
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = $"Unable to crop zoom region: {ex.Message}" });
+        }
+
+        string answer = await _zoomVisionService.AnalyzeAsync(_apiKey!, croppedJpeg, request.Question, cancellationToken).ConfigureAwait(false);
+        return JsonSerializer.SerializeToElement(new
+        {
+            ok = true,
+            source = "zoom_region",
+            answer,
+            bounds = new { x = bounds.Left, y = bounds.Top, width = bounds.Width, height = bounds.Height },
+            frame = new { width = frameWidth, height = frameHeight }
+        });
+    }
+
+    private static byte[] CropJpeg(byte[] fullResolutionJpeg, SKRectI bounds)
+    {
+        using SKBitmap source = SKBitmap.Decode(fullResolutionJpeg)
+            ?? throw new InvalidOperationException("The latest screenshot could not be decoded.");
+        using SKBitmap cropped = new(bounds.Width, bounds.Height, source.ColorType, source.AlphaType);
+        using (SKCanvas canvas = new(cropped))
+        {
+            canvas.DrawBitmap(source, bounds, new SKRect(0, 0, bounds.Width, bounds.Height));
+        }
+
+        using SKImage image = SKImage.FromBitmap(cropped);
+        using SKData encoded = image.Encode(SKEncodedImageFormat.Jpeg, 90);
+        return encoded.ToArray();
+    }
+
+    private bool TryGetLatestZoomFrame(out byte[] fullResolutionJpeg, out int frameWidth, out int frameHeight)
+    {
+        lock (_latestFrameLock)
+        {
+            if (_latestFullResolutionJpeg is null || _latestFrameWidth <= 0 || _latestFrameHeight <= 0)
+            {
+                fullResolutionJpeg = [];
+                frameWidth = 0;
+                frameHeight = 0;
+                return false;
+            }
+
+            fullResolutionJpeg = _latestFullResolutionJpeg.ToArray();
+            frameWidth = _latestFrameWidth;
+            frameHeight = _latestFrameHeight;
+            return true;
+        }
+    }
+
+    private void StoreLatestZoomFrame(FrameEncodeResult encoded)
+    {
+        if (encoded.FullResolutionJpeg is null || encoded.FullResolutionWidth <= 0 || encoded.FullResolutionHeight <= 0)
+        {
+            return;
+        }
+
+        lock (_latestFrameLock)
+        {
+            _latestFullResolutionJpeg = encoded.FullResolutionJpeg.ToArray();
+            _latestFrameWidth = encoded.FullResolutionWidth;
+            _latestFrameHeight = encoded.FullResolutionHeight;
+        }
+    }
+
+    private void ClearLatestZoomFrame()
+    {
+        lock (_latestFrameLock)
+        {
+            _latestFullResolutionJpeg = null;
+            _latestFrameWidth = 0;
+            _latestFrameHeight = 0;
+        }
+    }
+
+    private static bool TryParseZoomRequest(JsonElement args, out ZoomRequest request, out string error)
+    {
+        request = new ZoomRequest(string.Empty, null, null);
+        error = string.Empty;
+
+        string question = args.TryGetProperty("question", out JsonElement questionElement)
+            ? questionElement.GetString() ?? string.Empty
+            : string.Empty;
+        if (string.IsNullOrWhiteSpace(question))
+        {
+            error = "zoom_region requires a non-empty question.";
+            return false;
+        }
+
+        if (args.TryGetProperty("box", out JsonElement boxElement) && boxElement.ValueKind == JsonValueKind.Object)
+        {
+            if (!TryGetInt(boxElement, "x", out int x) || !TryGetInt(boxElement, "y", out int y) ||
+                !TryGetInt(boxElement, "width", out int width) || !TryGetInt(boxElement, "height", out int height))
+            {
+                error = "zoom_region box must contain integer x, y, width and height.";
+                return false;
+            }
+
+            request = new ZoomRequest(question.Trim(), null, new SKRectI(x, y, x + width, y + height));
+            return true;
+        }
+
+        if (args.TryGetProperty("cells", out JsonElement cellsElement) && cellsElement.ValueKind == JsonValueKind.Array)
+        {
+            string[] cells = cellsElement.EnumerateArray()
+                .Where(element => element.ValueKind == JsonValueKind.String)
+                .Select(element => (element.GetString() ?? string.Empty).Trim().ToUpperInvariant())
+                .Where(cell => cell.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (cells.Length == 0)
+            {
+                error = "zoom_region cells must contain at least one value like A1 or C3.";
+                return false;
+            }
+
+            if (cells.Any(cell => !ZoomCellRegex.IsMatch(cell)))
+            {
+                error = "zoom_region cells must be in the A1-D4 grid.";
+                return false;
+            }
+
+            request = new ZoomRequest(question.Trim(), cells, null);
+            return true;
+        }
+
+        error = "zoom_region requires either cells (A1-D4) or box (x,y,width,height).";
+        return false;
+    }
+
+    private static bool TryResolveZoomBounds(ZoomRequest request, int frameWidth, int frameHeight, out SKRectI bounds, out string error)
+    {
+        bounds = default;
+        error = string.Empty;
+
+        if (request.Box is { } box)
+        {
+            if (box.Width <= 0 || box.Height <= 0)
+            {
+                error = "zoom_region box width and height must be positive.";
+                return false;
+            }
+
+            SKRectI clamped = SKRectI.Intersect(box, new SKRectI(0, 0, frameWidth, frameHeight));
+            if (clamped.Width <= 0 || clamped.Height <= 0)
+            {
+                error = "zoom_region box is outside the captured screen.";
+                return false;
+            }
+
+            bounds = clamped;
+            return true;
+        }
+
+        if (request.Cells is not { Length: > 0 })
+        {
+            error = "zoom_region cells are missing.";
+            return false;
+        }
+
+        int minColumn = int.MaxValue;
+        int minRow = int.MaxValue;
+        int maxColumn = int.MinValue;
+        int maxRow = int.MinValue;
+        foreach (string cell in request.Cells)
+        {
+            int column = char.ToUpperInvariant(cell[0]) - 'A';
+            int row = cell[1] - '1';
+            minColumn = Math.Min(minColumn, column);
+            minRow = Math.Min(minRow, row);
+            maxColumn = Math.Max(maxColumn, column);
+            maxRow = Math.Max(maxRow, row);
+        }
+
+        int cellWidth = Math.Max(1, frameWidth / 4);
+        int cellHeight = Math.Max(1, frameHeight / 4);
+        int left = minColumn * cellWidth;
+        int top = minRow * cellHeight;
+        int right = maxColumn == 3 ? frameWidth : (maxColumn + 1) * cellWidth;
+        int bottom = maxRow == 3 ? frameHeight : (maxRow + 1) * cellHeight;
+        bounds = SKRectI.Intersect(new SKRectI(left, top, right, bottom), new SKRectI(0, 0, frameWidth, frameHeight));
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            error = "zoom_region cells resolved to an empty area.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetInt(JsonElement element, string property, out int value)
+    {
+        value = 0;
+        if (!element.TryGetProperty(property, out JsonElement propertyElement))
+        {
+            return false;
+        }
+
+        return propertyElement.ValueKind == JsonValueKind.Number && propertyElement.TryGetInt32(out value);
+    }
+
+    private sealed record ZoomRequest(string Question, string[]? Cells, SKRectI? Box);
     private object BuildElementUnderCursorPayload()
     {
         DesktopElementSnapshot? element = _desktopAutomation.GetElementUnderCursor();
@@ -704,24 +1272,63 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             };
     }
 
-    private static object BuildItemsPayload(IReadOnlyList<DesktopItemSnapshot> items) => new
+    private object BuildDesktopIconsPayload()
     {
-        ok = true,
-        count = items.Count,
-        items = items.Select(item => new
+        DesktopIconCountSnapshot snapshot = _desktopAutomation.GetDesktopIconCount();
+        return new
         {
-            name = item.Name,
-            controlType = item.ControlType,
-            bounds = new
+            ok = true,
+            count = snapshot.Count,
+            sourceItemCount = snapshot.SourceItemCount,
+            visibleUiItemCount = snapshot.VisibleUiItemCount,
+            hiddenOrFilteredCount = snapshot.HiddenOrFilteredCount,
+            reliable = snapshot.IsReliable,
+            reliabilityNote = snapshot.ReliabilityNote,
+            strategy = snapshot.SourceStrategy,
+            policy = snapshot.SourcePolicy,
+            items = snapshot.VisibleItems.Select(item => new
             {
-                x = item.Bounds.X,
-                y = item.Bounds.Y,
-                width = item.Bounds.Width,
-                height = item.Bounds.Height
-            }
-        }).ToArray()
-    };
+                name = item.Name,
+                controlType = item.ControlType,
+                bounds = new
+                {
+                    x = item.Bounds.X,
+                    y = item.Bounds.Y,
+                    width = item.Bounds.Width,
+                    height = item.Bounds.Height
+                }
+            }).ToArray()
+        };
+    }
 
+    private object BuildTaskbarItemsPayload()
+    {
+        TaskbarItemCountSnapshot snapshot = _desktopAutomation.GetTaskbarItemCount();
+        return new
+        {
+            ok = true,
+            count = snapshot.Count,
+            appButtons = snapshot.AppButtons,
+            trayButtons = snapshot.TrayButtons,
+            systemButtons = snapshot.SystemButtons,
+            reliable = snapshot.IsReliable,
+            reliabilityNote = snapshot.ReliabilityNote,
+            strategy = snapshot.SourceStrategy,
+            policy = snapshot.SourcePolicy,
+            items = snapshot.AppItems.Select(item => new
+            {
+                name = item.Name,
+                controlType = item.ControlType,
+                bounds = new
+                {
+                    x = item.Bounds.X,
+                    y = item.Bounds.Y,
+                    width = item.Bounds.Width,
+                    height = item.Bounds.Height
+                }
+            }).ToArray()
+        };
+    }
     private object BuildFocusedWindowPayload()
     {
         FocusedWindowSnapshot? window = _desktopAutomation.GetFocusedWindow();
@@ -796,6 +1403,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             if (!e.IsAvailable)
             {
                 StopSpeaking();
+                CancelAssistantAudioWatchdog();
                 _audioCapture.Stop();
                 SetMicrophoneState(false);
                 await StopMediaAsync().ConfigureAwait(false);
@@ -983,6 +1591,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
+        StoreLatestZoomFrame(encoded);
+
         long uploadStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         await _liveClient.SendVideoFrameAsync(encoded.Base64Jpeg, cancellationToken).ConfigureAwait(false);
         RecordFrameUpload(System.Diagnostics.Stopwatch.GetElapsedTime(uploadStarted), encoded.JpegBytes);
@@ -1057,6 +1667,19 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         DesktopIconCount,
         TaskbarItemCount
     }
+
+    private enum CountIntentTarget
+    {
+        DesktopIcons,
+        TaskbarAppIcons
+    }
+
+    private sealed record RecentCountContext(CountIntentTarget Target, DateTimeOffset TimestampUtc);
+
+    private sealed record CountReplyOutcome(
+        string Reply,
+        string Diagnostics,
+        PendingDesktopExpectation? Expectation);
 
     private sealed record PendingDesktopExpectation(
         DesktopExpectationType Type,
@@ -1259,6 +1882,49 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         SpeakingStateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

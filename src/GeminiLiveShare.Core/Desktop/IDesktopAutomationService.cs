@@ -10,6 +10,10 @@ public interface IDesktopAutomationService
 
     IReadOnlyList<DesktopItemSnapshot> ListDesktopIcons();
 
+    DesktopIconCountSnapshot GetDesktopIconCount();
+
+    TaskbarItemCountSnapshot GetTaskbarItemCount();
+
     FocusedWindowSnapshot? GetFocusedWindow();
 }
 
@@ -23,6 +27,28 @@ public sealed record DesktopItemSnapshot(
     string Name,
     string ControlType,
     Rectangle Bounds);
+
+public sealed record DesktopIconCountSnapshot(
+    int Count,
+    int SourceItemCount,
+    int VisibleUiItemCount,
+    int HiddenOrFilteredCount,
+    bool IsReliable,
+    string ReliabilityNote,
+    string SourceStrategy,
+    string SourcePolicy,
+    IReadOnlyList<DesktopItemSnapshot> VisibleItems);
+
+public sealed record TaskbarItemCountSnapshot(
+    int Count,
+    int AppButtons,
+    int TrayButtons,
+    int SystemButtons,
+    bool IsReliable,
+    string ReliabilityNote,
+    string SourceStrategy,
+    string SourcePolicy,
+    IReadOnlyList<DesktopItemSnapshot> AppItems);
 
 public sealed record FocusedWindowSnapshot(
     string AppName,
