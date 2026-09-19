@@ -1,7 +1,7 @@
 # PROJECT STATE — Gemini Live Share (Windows)
 
 **Read this file first. It is the single source of truth for what exists today.**
-Last updated: 2026-09-18 · Branch: `main` · Latest commit: `d2550ae`
+Last updated: 2026-09-19 · Branch: `main` · Latest commit: `d55768e`
 
 Everything below reflects the code as it is now. The other docs are either plans
 (what we intended) or history (what we fixed). Read them only when this file
@@ -102,18 +102,22 @@ session log. See `PHASE_LOG.md` §1 for the numbers.
 | Chat history, titles, rename | Working. SQLite, AI-generated titles, backfill at startup |
 | Overlay UI, tray, global hotkey | Working (Phase 5 complete) |
 | Reconnect with session resumption | Working |
+| Phase 7e zoom_region + fresh-frame forcing | Working; regular Gemini crop analysis plus Gemini-only A1-D4 grid |
+| Phase 7f web search | Working through Live Google Search when available, with app `web_search` fallback when quota blocks Live grounding |
+| Phase 7g element highlighting | Working; UI Automation/browser lookup plus click-through capture-excluded overlay |
 | Diagnostics log | Working: `%LOCALAPPDATA%\GeminiLiveShare\logs\session-yyyyMMdd.log` |
 | Browser agent 6a–6e | Working: extension ⇄ proxy ⇄ app pipe, `get_active_page`, `get_form_fields`, page context injected into the conversation. **Read-only** |
-| Google Search in Live | **Requested but refused.** See §5 |
+| Google Search in Live | **May be refused by key quota.** The client now falls back to app `web_search`; the UI/status reports which capability is active. See §5 |
 
 ## 5. Known problems (the current work)
 
 These were diagnosed on 2026-09-17/18 with real sessions and the diagnostics log.
 
-### P1 — Gemini invents details it cannot see (highest priority)
-Asked to count taskbar icons it named Edge, Teams and VS Code, none of which were
-on screen. Asked where the mouse pointer was, it guessed. Asked to count desktop
-icons it said "42" and gave a made-up position for an icon.
+### P1 — Gemini invents details it cannot see (addressed by Phase 7)
+The original failure was invented taskbar/desktop counts, pointer locations, and small
+visual details. Phase 7 now routes exact desktop facts through UI Automation, uses
+`zoom_region` for details that need vision, and instructs the model to refuse weak
+evidence. Live/manual verification remains important for unusual applications.
 
 **Cause: not the capture pipeline.** The log shows frames delivered well: 160 sent,
 0 dropped, ~228 KB each at quality 90, 2 ms uploads. The Live API compresses every
@@ -121,33 +125,28 @@ video frame to a small fixed size, so 24 px icons and small text become unreadab
 The model then fills the gap with a plausible guess. This is why the same task works
 on a phone (large UI) and fails on a desktop (dense UI).
 
-**Fix direction:** stop using vision for things Windows can answer exactly. Use UI
-Automation for elements, the taskbar and desktop icons; add a zoom tool that crops
-from the full-resolution capture for the rest; and instruct the model never to guess.
-Details in `docs/PHASE7_ACCURACY_PLAN.md`.
+**Implemented direction:** stop using vision for things Windows can answer exactly.
+Use UI Automation for elements, the taskbar and desktop icons; use `zoom_region`
+for the remaining visual details; and instruct the model never to guess.
+Details are recorded in `PHASE_LOG.md`.
 
-### P2 — No web search
-**The code is correct**: `tools: [{ googleSearch: {} }]` is sent in the setup message
-(`Models/SetupMessage.cs`, `GeminiLiveClient.cs:310`). Google **rejects** it in about
-400 ms with a quota error, because the project is on the **free tier**. The app then
-reconnects without search and tells the model to say it cannot search.
+### P2 — Live Google Search can be refused by API-key quota
+Live Google Search grounding is attempted first. If the key lacks the required quota,
+the client falls back to the app-level `web_search` function tool, which uses a
+regular Gemini request with Google Search grounding. The UI shows whether search is
+using Live grounding, the app fallback, or is unavailable. Billing/quota changes are
+still external to this repository.
 
-Confirmed in the log on two separate sessions, and in the AI Studio console
-(free-tier badge, plus 409/429 errors on Sep 17).
+### P3 — Element highlighting
+Resolved in Phase 7g. `highlight_element` finds visible enabled controls through UI
+Automation first, then the existing browser integration when available, and shows a
+temporary click-through marker. Manual DPI, multi-monitor, and browser verification
+are still required.
 
-**Fix:** enable billing on the Google Cloud project behind the API key, then retest.
-No code change may be needed. **Restart the app when testing** — "search unavailable"
-is cached for the whole app run (`GeminiLiveClient.cs:24`).
-
-### P3 — No way to show the user where to click
-The assistant can say "click Next" but cannot point at it. For the target audience
-this is the difference between usable and useless. Planned as 7g.
-
-### P4 — A fresh session loses all context
-When a session ends and a new one starts, Gemini greets the user again and forgets
-everything, including that screen sharing was on. The Live API also ends long
-sessions by design. (Note: the mid-conversation greeting seen on Sep 17 was a
-deliberate new conversation, not a bug, but the underlying gap is real.)
+### P4 — Context across fresh sessions
+Resolved in code by `ConversationStateRebuilder`: when reconnecting into a fresh Live
+session, the app restores recent turns and current screen-share/page-context state and
+shows a Reconnected badge. Manual network-drop verification remains.
 
 ## 6. What's next
 
@@ -156,13 +155,13 @@ criteria for each step, is in `docs/PHASE7_ACCURACY_PLAN.md`.
 
 | Order | Step | Size |
 |---|---|---|
-| 1 | 7c System instruction: never guess; ask the user to point | S |
-| 2 | 7d UI Automation tools: element under cursor, taskbar, desktop icons, focused window | M |
-| 3 | 7f Web search: enable billing, then a `web_search` tool if still refused | S–M |
-| 4 | 7e Zoom tool plus a fresh frame when the user starts speaking | M |
-| 5 | 7g `highlight_element`: click-through overlay pointing at the real control | M–L |
-| 6 | 7b Reconnect context: carry a conversation summary into a fresh session | M |
-| 7 | 7a Diagnostics: log search state every session; optional saving of sent frames | S |
+| 1 | 7c System instruction: never guess; ask the user to point | Implemented |
+| 2 | 7d UI Automation tools: element under cursor, taskbar, desktop icons, focused window | Implemented |
+| 3 | 7f Web search: Live grounding plus app `web_search` fallback | Implemented |
+| 4 | 7e Zoom tool plus a fresh frame when the user starts speaking | Implemented |
+| 5 | 7g `highlight_element`: click-through overlay pointing at the real control | Implemented; manual DPI/browser verification remains |
+| 6 | 7b Reconnect context: carry a conversation summary into a fresh session | Implemented |
+| 7 | 7a Diagnostics: log search state every session; optional saving of sent frames | Implemented |
 
 **Then Phase 6 continues (browser agent, write operations).** Spec:
 `docs/PHASE6_BROWSER_AGENT.md`. 6a–6e are done; remaining:

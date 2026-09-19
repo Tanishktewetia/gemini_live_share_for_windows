@@ -4,7 +4,8 @@ public sealed class SessionReadyEventArgs(
     bool isReconnect,
     bool attemptedResumption,
     bool wasSessionResumed,
-    bool isWebSearchAvailable) : EventArgs
+    bool isWebSearchAvailable,
+    string webSearchMode = "Off") : EventArgs
 {
     public bool IsReconnect { get; } = isReconnect;
 
@@ -13,4 +14,6 @@ public sealed class SessionReadyEventArgs(
     public bool WasSessionResumed { get; } = wasSessionResumed;
 
     public bool IsWebSearchAvailable { get; } = isWebSearchAvailable;
+
+    public string WebSearchMode { get; } = webSearchMode;
 }

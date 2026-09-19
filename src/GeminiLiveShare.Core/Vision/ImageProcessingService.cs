@@ -140,13 +140,14 @@ public sealed class ImageProcessingService : IImageProcessingService
         SKBitmap output = resized ?? source;
         byte[] encodedBytes;
         byte[] fullResolutionJpeg;
+        using SKBitmap uploadFrame = output.Copy();
         try
         {
-            encodedBytes = EncodeJpeg(output, Math.Clamp(JpegQuality, 40, 100));
-            // zoom_region needs a crop from the exact full-resolution sanitized frame, not the upload-sized frame.
-            fullResolutionJpeg = ReferenceEquals(output, source)
-                ? encodedBytes
-                : EncodeJpeg(source, Math.Clamp(JpegQuality, 40, 100));
+            // The grid is only sent to Gemini. The user's screen and the full-resolution zoom source
+            // remain untouched, so zoom_region can read the original pixels.
+            DrawZoomGrid(uploadFrame);
+            encodedBytes = EncodeJpeg(uploadFrame, Math.Clamp(JpegQuality, 40, 100));
+            fullResolutionJpeg = EncodeJpeg(source, Math.Clamp(JpegQuality, 40, 100));
         }
         finally
         {
@@ -172,6 +173,67 @@ public sealed class ImageProcessingService : IImageProcessingService
             source.Width,
             source.Height);
     }
+
+#pragma warning disable CS0618
+    private static void DrawZoomGrid(SKBitmap bitmap)
+    {
+        // Tiny synthetic/test frames are not useful to Gemini and a grid could cover a protected
+        // OCR rectangle; real desktop captures are large enough for the labels to be meaningful.
+        if (bitmap.Width < 320 || bitmap.Height < 200)
+        {
+            return;
+        }
+
+        using SKCanvas canvas = new(bitmap);
+        using SKPaint linePaint = new()
+        {
+            Color = SKColors.White.WithAlpha(55),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = Math.Max(1, bitmap.Width / 1400f),
+            IsAntialias = true
+        };
+        using SKPaint labelBackground = new()
+        {
+            Color = SKColors.Black.WithAlpha(110),
+            Style = SKPaintStyle.Fill,
+            IsAntialias = true
+        };
+        using SKPaint labelPaint = new()
+        {
+            Color = SKColors.White.WithAlpha(220),
+            TextSize = Math.Max(14, bitmap.Width / 110f),
+            IsAntialias = true
+        };
+
+        float cellWidth = bitmap.Width / 4f;
+        float cellHeight = bitmap.Height / 4f;
+        for (int column = 1; column < 4; column++)
+        {
+            float x = column * cellWidth;
+            canvas.DrawLine(x, 0, x, bitmap.Height, linePaint);
+        }
+        for (int row = 1; row < 4; row++)
+        {
+            float y = row * cellHeight;
+            canvas.DrawLine(0, y, bitmap.Width, y, linePaint);
+        }
+
+        for (int row = 0; row < 4; row++)
+        {
+            for (int column = 0; column < 4; column++)
+            {
+                string label = $"{(char)('A' + column)}{row + 1}";
+                float x = column * cellWidth + 6;
+                float y = row * cellHeight + labelPaint.TextSize + 6;
+                SKRect textBounds = new();
+                labelPaint.MeasureText(label, ref textBounds);
+                canvas.DrawRect(new SKRect(x - 3, y - labelPaint.TextSize - 3, x + textBounds.Width + 3, y + 3), labelBackground);
+                canvas.DrawText(label, x, y, labelPaint);
+            }
+        }
+    }
+
+#pragma warning restore CS0618
 
     private static byte[] EncodeJpeg(SKBitmap bitmap, int quality)
     {

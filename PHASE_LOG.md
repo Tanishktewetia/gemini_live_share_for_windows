@@ -1,5 +1,67 @@
 # Phase Log
 
+## Phase 7e/7f/7g - zoomed vision, fallback web search, and click-through highlighting
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; solution build and console harness pass.
+- **Goal:** Complete the remaining accuracy UX needed for small visual details, current-information requests, and non-technical click guidance.
+- **Implementation:**
+  - **7e zoom:**
+    - Retained the latest full-resolution, privacy-sanitized JPEG separately from the upload-sized Live frame.
+    - Added `zoom_region(cells | box, question)` tool execution through a regular Gemini `generateContent` request with high media resolution.
+    - Added an A1-D4 grid to the Gemini-only upload image; the user screen and full-resolution zoom source are never modified.
+    - A user transcription forces the next unchanged frame to be captured, and a pending zoom request waits briefly for that fresh frame instead of answering from stale pixels.
+  - **7f web search:**
+    - Added a `web_search(query)` Live function-tool fallback for keys where Live Google Search grounding is refused for quota/billing reasons.
+    - The fallback calls regular Gemini with Google Search grounding, returns a concise answer plus source titles/URLs, and fails closed when the request cannot be completed.
+    - Search capability is surfaced in session status as Google Search, app `web_search`, or OFF; existing quota caching/fallback behavior remains.
+  - **7g highlight:**
+    - Added `highlight_element(name, role)` with UI Automation foreground-window lookup first and browser-extension DOM lookup fallback.
+    - Added a transparent, non-activating, click-through WPF overlay with DPI-aware coordinate conversion, multi-monitor screen coordinates, 8-second auto-clear, left-click clear, and `WDA_EXCLUDEFROMCAPTURE`.
+    - The overlay clears when the captured screen changes, screen sharing stops, or the session ends. It never clicks the target.
+    - Added browser `find_element` support returning visible enabled element bounds in physical screen pixels.
+- **Files changed:**
+  - `src/GeminiLiveShare.Core/Vision/ImageProcessingService.cs`
+  - `src/GeminiLiveShare.Core/Gemini/GeminiLiveClient.cs`
+  - `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`
+  - `src/GeminiLiveShare.Core/Gemini/GeminiWebSearchService.cs`
+  - `src/GeminiLiveShare.Core/Gemini/IWebSearchService.cs`
+  - `src/GeminiLiveShare.Core/Desktop/HighlightOverlayService.cs`
+  - `src/GeminiLiveShare.Core/Desktop/IHighlightOverlayService.cs`
+  - `src/GeminiLiveShare.Core/Desktop/DesktopAutomationService.cs`
+  - `src/GeminiLiveShare.Core/BrowserAgent/BrowserAgentToolRegistry.cs`
+  - `extension/background/service-worker.js`
+  - `src/GeminiLiveShare.App/App.xaml.cs`
+  - `src/GeminiLiveShare.Tests/Program.cs`
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln` (pass; 0 errors)
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` (pass)
+  - Added harness coverage for `highlight_element`, `web_search`, zoom execution, and fresh-frame forcing.
+- **Manual verification still required:**
+  1. With Windows display scaling at 100% and 150%, say "click Next" in Windows Settings; verify the marker is exactly over the control and the click goes through.
+  2. With a supported browser form open, say "highlight the Email field"; verify browser fallback coordinates and click-through behavior.
+  3. Ask for small text in an image/PDF; verify the answer comes from the zoomed crop and the A1-D4 grid is not visible on the user's screen.
+  4. Ask a current web question with a key that lacks Live Search quota; verify the app uses `web_search`, reports sources, and never claims a search when the fallback fails.
+
+## Phase 7d/7e hotfix - block deterministic counts until visual context is active
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and tests pass.
+- **Issue:** User reported contradictory flow where Gemini said screen was unavailable but still returned deterministic desktop icon counts.
+- **Fix:**
+  - Deterministic count routing now requires active visual context:
+    - screen share ON
+    - first screenshot actually sent (screen-share notice pending cleared)
+  - If count is requested before visual context is active, app sends authoritative no-screen reply (`GeminiLiveClient.NoScreenReply`) instead of returning a count.
+  - Clearing count intent/expectation state when screen share is turned OFF to avoid stale carryover.
+- **Files changed:**
+  - `src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs`
+  - `src/GeminiLiveShare.Tests/Program.cs`
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln` (pass)
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj` (pass)
+  - Added test: `ValidateCountIntentRequiresVisualContextAsync`
+
 ## Phase 7d audio reliability hotfix - assistant silence watchdog + audible deterministic count delivery
 
 - **Date:** 2026-09-19

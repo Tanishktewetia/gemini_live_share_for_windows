@@ -70,6 +70,34 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         },
         new FunctionDeclaration
         {
+            Name = "highlight_element",
+            Description = "Find a visible enabled control by its accessible name and optional role, then draw a temporary click-through highlight around it. Never click it.",
+            Parameters = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new
+                {
+                    name = new { type = "string" },
+                    role = new { type = "string" }
+                },
+                required = new[] { "name" },
+                additionalProperties = false
+            })
+        },
+        new FunctionDeclaration
+        {
+            Name = "web_search",
+            Description = "Search the public web using a regular Gemini request and return a concise sourced result. Use when current information is needed and Google Search grounding is not enabled in Live.",
+            Parameters = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new { query = new { type = "string" } },
+                required = new[] { "query" },
+                additionalProperties = false
+            })
+        },
+        new FunctionDeclaration
+        {
             Name = "zoom_region",
             Description = "Inspect a zoomed crop from the most recent full-resolution sanitized screenshot. Use either grid cells (A1-D4) or an explicit box with x,y,width,height plus a question.",
             Parameters = JsonSerializer.SerializeToElement(new
@@ -128,8 +156,8 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             (webSearchAvailable
                 ? "WEB SEARCH:\n- You can use Google Search. Use it when the user asks you to look something up or when a question " +
                   "needs current or factual information about products, companies or websites. Base your answer on the results."
-                : "WEB SEARCH:\n- You cannot search the internet in this session. Never say you searched or looked something up. " +
-                  "If asked to search, say you can't search the internet right now and answer from your own knowledge, saying it may be out of date.") +
+                : "WEB SEARCH:\n- Google Search grounding is unavailable. Never say you searched unless the app's web_search tool returned a result. Call web_search for current or factual information. " +
+                  "If that tool fails, say that web search is temporarily unavailable and do not invent current facts.") +
             "\n\nNAMES YOU MAY HEAR:\n- Speech recognition often mishears product names. \"Cloud\" or \"Cloud Code\" said about an AI app " +
             "usually means Claude or Claude Code, made by Anthropic. If the user corrects a name, use their correction from then on.";
     }
@@ -356,14 +384,19 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                 bool resumedSession = attemptedResumption;
                 string connectedLabel = isReconnect ? "Reconnected" : "Connected";
                 StatusChanged?.Invoke(this, connectedLabel);
+                string searchLabel = setup.GoogleSearchEnabled
+                    ? "Google Search ON"
+                    : setup.AppWebSearchEnabled ? "app web_search ON" : "OFF";
                 StatusChanged?.Invoke(this,
-                    $"{connectedLabel}: session {(resumedSession ? "resumed" : "fresh")}, web search {(setup.WebSearchEnabled ? "ON" : "OFF")}, desktop tools {(setup.DesktopToolsEnabled ? "ON" : "OFF")}");
+                    $"{connectedLabel}: session {(resumedSession ? "resumed" : "fresh")}, web search {searchLabel}, desktop tools {(setup.DesktopToolsEnabled ? "ON" : "OFF")}");
                 SetConnectionAvailability(true);
                 SessionReady?.Invoke(this, new SessionReadyEventArgs(
                     isReconnect,
                     attemptedResumption,
                     resumedSession,
-                    setup.WebSearchEnabled));
+                    setup.GoogleSearchEnabled || setup.AppWebSearchEnabled,
+                    setup.GoogleSearchEnabled ? "Google Search" :
+                        setup.AppWebSearchEnabled ? "App web_search" : "Off"));
                 initialConnection.TrySetResult();
                 await ReceiveUntilDisconnectedAsync(socket, cancellationToken).ConfigureAwait(false);
             }
@@ -460,7 +493,10 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
 
         if (desktopToolsEnabled)
         {
-            tools.Add(new ToolConfiguration { FunctionDeclarations = s_desktopFunctionDeclarations });
+            FunctionDeclaration[] declarations = webSearchEnabled
+                ? s_desktopFunctionDeclarations.Where(declaration => declaration.Name != "web_search").ToArray()
+                : s_desktopFunctionDeclarations;
+            tools.Add(new ToolConfiguration { FunctionDeclarations = declarations });
         }
 
         return tools.Count == 0 ? null : tools.ToArray();
@@ -504,7 +540,11 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             await Task.WhenAny(setupCompleted.Task, receiveSetup).WaitAsync(SetupTimeout, cancellationToken).ConfigureAwait(false);
             await receiveSetup.ConfigureAwait(false);
             await setupCompleted.Task.ConfigureAwait(false);
-            return new SocketSetupResult(socket, webSearch, desktopTools);
+            return new SocketSetupResult(
+                socket,
+                GoogleSearchEnabled: webSearch,
+                AppWebSearchEnabled: !webSearch && desktopTools,
+                DesktopToolsEnabled: desktopTools);
         }
         catch
         {
@@ -685,7 +725,11 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         }
     }
 
-    private sealed record SocketSetupResult(ClientWebSocket Socket, bool WebSearchEnabled, bool DesktopToolsEnabled);
+    private sealed record SocketSetupResult(
+        ClientWebSocket Socket,
+        bool GoogleSearchEnabled,
+        bool AppWebSearchEnabled,
+        bool DesktopToolsEnabled);
 
     private static TaskCompletionSource NewCompletionSource() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 

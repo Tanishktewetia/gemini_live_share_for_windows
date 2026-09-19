@@ -35,6 +35,7 @@ public partial class MainViewModel : ObservableObject
     private ChatSessionViewModel? _selectedSession;
     [ObservableProperty] private bool _hasMessages;
     [ObservableProperty] private bool _showWebSearchUnavailable;
+    [ObservableProperty] private bool _showWebSearchFallback;
     [ObservableProperty] private bool _showReconnected;
 
     public MainViewModel(
@@ -321,6 +322,7 @@ public partial class MainViewModel : ObservableObject
     private void RefreshConnectionBadges()
     {
         ShowWebSearchUnavailable = IsRunning && !_orchestrator.IsWebSearchAvailable;
+        ShowWebSearchFallback = IsRunning && _orchestrator.WebSearchMode.Equals("App web_search", StringComparison.Ordinal);
         ShowReconnected = IsRunning && _orchestrator.HasReconnected;
     }
     private void AddLiveMessage(ChatMessage message)

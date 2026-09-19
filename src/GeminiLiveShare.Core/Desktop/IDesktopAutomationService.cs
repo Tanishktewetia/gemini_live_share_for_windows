@@ -14,6 +14,8 @@ public interface IDesktopAutomationService
 
     TaskbarItemCountSnapshot GetTaskbarItemCount();
 
+    IReadOnlyList<DesktopItemSnapshot> FindElementsByNameRole(string name, string? role);
+
     FocusedWindowSnapshot? GetFocusedWindow();
 }
 

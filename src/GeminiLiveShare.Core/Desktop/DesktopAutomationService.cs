@@ -209,6 +209,92 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
         }
     }
 
+
+    public IReadOnlyList<DesktopItemSnapshot> FindElementsByNameRole(string name, string? role)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return Array.Empty<DesktopItemSnapshot>();
+        }
+
+        try
+        {
+            List<AutomationElement> roots = new();
+            nint foregroundWindow = GetForegroundWindow();
+            if (foregroundWindow != 0)
+            {
+                try
+                {
+                    AutomationElement foreground = RunWithTimeout(() => AutomationElement.FromHandle(foregroundWindow));
+                    roots.Add(foreground);
+                }
+                catch
+                {
+                    // fall through to root search
+                }
+            }
+
+            if (roots.Count == 0)
+            {
+                roots.Add(AutomationElement.RootElement);
+            }
+
+            List<DesktopItemSnapshot> matches = new();
+            string needle = name.Trim();
+            ControlType[]? preferredTypes = ResolveRoleControlTypes(role);
+            foreach (AutomationElement root in roots)
+            {
+                Condition baseCondition = new AndCondition(
+                    new PropertyCondition(AutomationElement.IsOffscreenProperty, false),
+                    new PropertyCondition(AutomationElement.IsEnabledProperty, true));
+                AutomationElementCollection elements = root.FindAll(TreeScope.Descendants, baseCondition);
+                foreach (AutomationElement element in elements)
+                {
+                    string elementName = NormalizeName(element.Current.Name);
+                    if (!elementName.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    ControlType? type = element.Current.ControlType;
+                    if (preferredTypes is not null && type is not null && !preferredTypes.Contains(type))
+                    {
+                        continue;
+                    }
+
+                    Rectangle bounds = ToRectangle(element.Current.BoundingRectangle);
+                    if (bounds.Width <= 0 || bounds.Height <= 0)
+                    {
+                        continue;
+                    }
+
+                    matches.Add(new DesktopItemSnapshot(
+                        elementName,
+                        type?.ProgrammaticName ?? "Unknown",
+                        bounds));
+                }
+
+                if (matches.Count > 0)
+                {
+                    break;
+                }
+            }
+
+            return matches
+                .GroupBy(item => BuildSnapshotKey(item.Name, item.Bounds), StringComparer.Ordinal)
+                .Select(group => group.First())
+                .OrderBy(item => item.Bounds.Y)
+                .ThenBy(item => item.Bounds.X)
+                .Take(12)
+                .ToArray();
+        }
+        catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or TimeoutException)
+        {
+            Trace.WriteLine($"find_elements_by_name_role failed: {ex.Message}");
+            return Array.Empty<DesktopItemSnapshot>();
+        }
+    }
+
     public FocusedWindowSnapshot? GetFocusedWindow()
     {
         nint foregroundWindow = GetForegroundWindow();
@@ -503,6 +589,27 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
         return RunWithTimeout(() => AutomationElement.RootElement.FindFirst(TreeScope.Descendants, condition));
     }
 
+
+    private static ControlType[]? ResolveRoleControlTypes(string? role)
+    {
+        if (string.IsNullOrWhiteSpace(role))
+        {
+            return null;
+        }
+
+        string normalized = role.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "icon" or "desktop icon" => [ControlType.ListItem],
+            "button" => [ControlType.Button],
+            "link" => [ControlType.Hyperlink],
+            "menuitem" or "menu item" => [ControlType.MenuItem],
+            "tab" => [ControlType.TabItem],
+            "textbox" or "text box" => [ControlType.Edit],
+            _ => null
+        };
+    }
+
     private static string ResolveProcessName(uint processId)
     {
         try
@@ -561,5 +668,3 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
         public int Y;
     }
 }
-
-

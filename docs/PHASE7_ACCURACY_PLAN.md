@@ -1,6 +1,6 @@
 # Phase 7 — Accuracy and Reliability
 
-**Status:** planned, not started. Agreed 2026-09-18.
+**Status:** Implemented in code; manual verification remains for real Windows UI, DPI/multi-monitor placement, and live quota behavior. Agreed 2026-09-18.
 **Read `PROJECT_STATE.md` §5 first** for the diagnosed problems this phase fixes.
 
 ## Why this phase comes before the rest of Phase 6

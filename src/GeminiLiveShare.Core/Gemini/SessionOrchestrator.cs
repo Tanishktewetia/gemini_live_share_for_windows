@@ -41,7 +41,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private readonly ConversationStateRebuilder _conversationStateRebuilder;
     private readonly IDesktopAutomationService _desktopAutomation;
     private readonly IZoomVisionService _zoomVisionService;
+    private readonly IHighlightOverlayService _highlightOverlay;
+    private readonly IWebSearchService _webSearchService;
     private readonly object _latestFrameLock = new();
+    private TaskCompletionSource<bool>? _freshFrameAfterSpeech;
     private byte[]? _latestFullResolutionJpeg;
     private int _latestFrameWidth;
     private int _latestFrameHeight;
@@ -70,6 +73,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private int _screenShareNoticePending;
     private int _restoreConversationStatePending;
     private bool _isWebSearchAvailable = true;
+    private string _webSearchMode = "Unknown";
     private bool _hasReconnected;
     private bool _browserPageContextAttached;
     private readonly object _desktopExpectationLock = new();
@@ -102,13 +106,17 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         ISessionDiagnostics? diagnostics = null,
         IDiagnosticsDebugSettings? diagnosticsSettings = null,
         IDesktopAutomationService? desktopAutomation = null,
-        IZoomVisionService? zoomVisionService = null)
+        IZoomVisionService? zoomVisionService = null,
+        IHighlightOverlayService? highlightOverlay = null,
+        IWebSearchService? webSearchService = null)
     {
         _diagnostics = diagnostics ?? NullSessionDiagnostics.Instance;
         _diagnosticsSettings = diagnosticsSettings ?? new DiagnosticsDebugSettings();
         _conversationStateRebuilder = new ConversationStateRebuilder(chatHistory, browserAgentBridge);
         _desktopAutomation = desktopAutomation ?? new DesktopAutomationService();
         _zoomVisionService = zoomVisionService ?? new GeminiZoomVisionService();
+        _highlightOverlay = highlightOverlay ?? NullHighlightOverlayService.Instance;
+        _webSearchService = webSearchService ?? new GeminiWebSearchService();
         StatusChanged += (_, status) => _diagnostics.Log($"status: {status}");
         _audioCapture = audioCapture;
         _audioPlayback = audioPlayback;
@@ -159,6 +167,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     public bool IsWebSearchAvailable => _isWebSearchAvailable;
 
+    public string WebSearchMode => _webSearchMode;
+
     public bool HasReconnected => _hasReconnected;
 
     public async Task StartAsync(string apiKey, CancellationToken cancellationToken = default)
@@ -181,6 +191,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 _apiKey = apiKey;
                 _sessionId = Guid.NewGuid().ToString("N");
                 _isWebSearchAvailable = true;
+                _webSearchMode = "Unknown";
                 _hasReconnected = false;
                 _browserPageContextAttached = false;
                 ClearPendingDesktopExpectation();
@@ -252,11 +263,13 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             _sessionId = null;
             _apiKey = null;
             _isWebSearchAvailable = true;
+            _webSearchMode = "Unknown";
             _hasReconnected = false;
             _browserPageContextAttached = false;
             ClearPendingDesktopExpectation();
             ClearRecentCountIntent();
             ClearLatestZoomFrame();
+            await ClearHighlightAsync().ConfigureAwait(false);
             Interlocked.Exchange(ref _restoreConversationStatePending, 0);
             LogDiagnosticsSummary("session end");
             StatusChanged?.Invoke(this, "Conversation stopped");
@@ -337,6 +350,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             // capture loop to unwind, but no new frame is allowed past this point.
             SetScreenShareState(false);
             ClearLatestZoomFrame();
+            await ClearHighlightAsync().ConfigureAwait(false);
             await StopVideoSenderAsync().ConfigureAwait(false);
             if (_liveClient.IsConnected && !string.IsNullOrWhiteSpace(_apiKey))
             {
@@ -406,6 +420,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _audioPlayback.Dispose();
         await _screenCapture.DisposeAsync().ConfigureAwait(false);
         await _liveClient.DisposeAsync().ConfigureAwait(false);
+        await _highlightOverlay.DisposeAsync().ConfigureAwait(false);
         await _chatHistory.DisposeAsync().ConfigureAwait(false);
         _lifecycleLock.Dispose();
     }
@@ -514,6 +529,11 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
+        lock (_latestFrameLock)
+        {
+            _freshFrameAfterSpeech?.TrySetCanceled();
+            _freshFrameAfterSpeech = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
         _imageProcessing.ForceSendNextFrame();
     }
     private async Task SendDesktopIntentContextIfNeededAsync(string userText)
@@ -529,14 +549,19 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     private async Task<bool> TryHandleDeterministicCountIntentAsync(string sessionId, string userText)
     {
-        if (!IsScreenShareOn)
+        if (!TryResolveCountIntentTarget(userText, out CountIntentTarget target))
         {
             return false;
         }
 
-        if (!TryResolveCountIntentTarget(userText, out CountIntentTarget target))
+        if (!IsVisualContextReadyForDeterministicDesktopAnswer())
         {
-            return false;
+            await _liveClient.SendTextAsync(
+                "Screen visual context is not active yet. Reply exactly with: " + GeminiLiveClient.NoScreenReply,
+                _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+            _diagnostics.Log("count intent blocked: no active visual context");
+            StatusChanged?.Invoke(this, "Count request deferred: screen sharing not active yet");
+            return true;
         }
 
         CountReplyOutcome outcome = target switch
@@ -562,6 +587,9 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         StatusChanged?.Invoke(this, "Count sent to Gemini for spoken deterministic reply");
         return true;
     }
+
+    private bool IsVisualContextReadyForDeterministicDesktopAnswer() =>
+        IsScreenShareOn && Volatile.Read(ref _screenShareNoticePending) == 0;
     private CountReplyOutcome BuildDesktopCountReply()
     {
         DesktopIconCountSnapshot count = _desktopAutomation.GetDesktopIconCount();
@@ -726,8 +754,14 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             // suppress the next model count reply to avoid contradictory duplicates in history.
             if (expectation.CorrectionsIssued < 0)
             {
+                if (NumberRegex.IsMatch(assistantText))
+                {
+                    ClearPendingDesktopExpectation();
+                    return true;
+                }
+
                 ClearPendingDesktopExpectation();
-                return true;
+                return false;
             }
 
             Match match = NumberRegex.Match(assistantText);
@@ -1001,11 +1035,200 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 return await ExecuteZoomRegionToolCallAsync(call, cancellationToken).ConfigureAwait(false);
             }
 
+            if (call.Name.Equals("highlight_element", StringComparison.Ordinal))
+            {
+                return await ExecuteHighlightElementToolCallAsync(call, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (call.Name.Equals("web_search", StringComparison.Ordinal))
+            {
+                return await ExecuteWebSearchToolCallAsync(call, cancellationToken).ConfigureAwait(false);
+            }
+
             return ExecuteDesktopToolCall(call);
         }
         catch (Exception ex)
         {
             return JsonSerializer.SerializeToElement(new { ok = false, error = ex.Message });
+        }
+    }
+
+    private async Task<JsonElement> ExecuteHighlightElementToolCallAsync(ToolCallRequest call, CancellationToken cancellationToken)
+    {
+        if (!TryParseHighlightRequest(call.Args, out string name, out string? role, out string parseError))
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = parseError });
+        }
+
+        IReadOnlyList<DesktopItemSnapshot> matches = _desktopAutomation.FindElementsByNameRole(name, role);
+        string source = "ui_automation";
+        if (matches.Count == 0 && _browserAgentBridge is not null)
+        {
+            try
+            {
+                JsonElement browserArgs = JsonSerializer.SerializeToElement(new { name, role });
+                ToolCallResult browserResult = await _browserAgentBridge
+                    .SendToolCallAsync("find_element", browserArgs, cancellationToken)
+                    .ConfigureAwait(false);
+                matches = ParseBrowserElementMatches(browserResult.Payload);
+                source = "browser_page";
+            }
+            catch (Exception ex)
+            {
+                _diagnostics.Log($"highlight: browser fallback unavailable: {ex.Message}");
+            }
+        }
+
+        if (matches.Count == 0)
+        {
+            return JsonSerializer.SerializeToElement(new
+            {
+                ok = false,
+                found = false,
+                error = $"No visible enabled element named '{name}' was found. Ask the user to move the pointer over the target."
+            });
+        }
+
+        DesktopItemSnapshot selected = matches[0];
+        await _highlightOverlay.ShowAsync(
+            selected.Bounds,
+            $"Click: {selected.Name}",
+            TimeSpan.FromSeconds(8),
+            cancellationToken).ConfigureAwait(false);
+
+        return JsonSerializer.SerializeToElement(new
+        {
+            ok = true,
+            found = true,
+            source,
+            ambiguous = matches.Count > 1,
+            matchCount = matches.Count,
+            selected = new
+            {
+                name = selected.Name,
+                role = selected.ControlType,
+                bounds = new
+                {
+                    x = selected.Bounds.X,
+                    y = selected.Bounds.Y,
+                    width = selected.Bounds.Width,
+                    height = selected.Bounds.Height
+                }
+            },
+            instruction = matches.Count > 1
+                ? "Several matches were found. The likeliest match is highlighted; ask the user whether this is the one before they click."
+                : "The control is highlighted. Tell the user to click it; do not click it yourself."
+        });
+    }
+
+    private async Task<JsonElement> ExecuteWebSearchToolCallAsync(ToolCallRequest call, CancellationToken cancellationToken)
+    {
+        string query = call.Args.TryGetProperty("query", out JsonElement queryElement)
+            ? queryElement.GetString()?.Trim() ?? string.Empty
+            : string.Empty;
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = "web_search requires a non-empty query." });
+        }
+
+        if (string.IsNullOrWhiteSpace(_apiKey))
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = "web_search is unavailable before session startup." });
+        }
+
+        try
+        {
+            WebSearchResult result = await _webSearchService
+                .SearchAsync(_apiKey, query, cancellationToken)
+                .ConfigureAwait(false);
+            _diagnostics.Log($"web search tool completed: reliable={(result.IsReliable ? "yes" : "no")}, sources={result.Sources.Count}");
+            return JsonSerializer.SerializeToElement(new
+            {
+                ok = true,
+                reliable = result.IsReliable,
+                query,
+                summary = result.Summary,
+                sources = result.Sources
+            });
+        }
+        catch (Exception ex)
+        {
+            _diagnostics.Log($"web search tool failed: {ex.Message}");
+            return JsonSerializer.SerializeToElement(new
+            {
+                ok = false,
+                error = "The web search request failed. Say that current web search is temporarily unavailable and do not guess.",
+                detail = ex.Message.Length > 240 ? ex.Message[..240] : ex.Message
+            });
+        }
+    }
+
+    private static bool TryParseHighlightRequest(JsonElement args, out string name, out string? role, out string error)
+    {
+        name = args.TryGetProperty("name", out JsonElement nameElement)
+            ? nameElement.GetString()?.Trim() ?? string.Empty
+            : string.Empty;
+        role = args.TryGetProperty("role", out JsonElement roleElement)
+            ? roleElement.GetString()?.Trim()
+            : null;
+        error = string.Empty;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            error = "highlight_element requires a non-empty name.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static IReadOnlyList<DesktopItemSnapshot> ParseBrowserElementMatches(JsonElement payload)
+    {
+        if (!payload.TryGetProperty("matches", out JsonElement matches) || matches.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<DesktopItemSnapshot>();
+        }
+
+        List<DesktopItemSnapshot> result = [];
+        foreach (JsonElement match in matches.EnumerateArray())
+        {
+            if (!match.TryGetProperty("name", out JsonElement nameElement) ||
+                !match.TryGetProperty("bounds", out JsonElement bounds) ||
+                !TryGetInt(bounds, "x", out int x) || !TryGetInt(bounds, "y", out int y) ||
+                !TryGetInt(bounds, "width", out int width) || !TryGetInt(bounds, "height", out int height) ||
+                width <= 0 || height <= 0)
+            {
+                continue;
+            }
+
+            string name = nameElement.GetString()?.Trim() ?? string.Empty;
+            if (name.Length == 0)
+            {
+                continue;
+            }
+
+            string role = match.TryGetProperty("role", out JsonElement roleElement)
+                ? roleElement.GetString() ?? "Unknown"
+                : "Unknown";
+            result.Add(new DesktopItemSnapshot(name, role, new System.Drawing.Rectangle(x, y, width, height)));
+        }
+
+        return result;
+    }
+
+    private async Task ClearHighlightAsync()
+    {
+        if (!_highlightOverlay.IsVisible)
+        {
+            return;
+        }
+
+        try
+        {
+            await _highlightOverlay.ClearAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _diagnostics.Log($"highlight: unable to clear overlay: {ex.Message}");
         }
     }
 
@@ -1028,6 +1251,11 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         if (!TryParseZoomRequest(call.Args, out ZoomRequest request, out string parseError))
         {
             return JsonSerializer.SerializeToElement(new { ok = false, error = parseError });
+        }
+
+        if (!await WaitForFreshFrameAfterSpeechAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = "A fresh screenshot was not ready. Ask the user to keep screen share on and try again." });
         }
 
         if (!TryGetLatestZoomFrame(out byte[] fullResolutionJpeg, out int frameWidth, out int frameHeight))
@@ -1114,9 +1342,48 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     {
         lock (_latestFrameLock)
         {
+            _freshFrameAfterSpeech?.TrySetCanceled();
+            _freshFrameAfterSpeech = null;
             _latestFullResolutionJpeg = null;
             _latestFrameWidth = 0;
             _latestFrameHeight = 0;
+        }
+    }
+
+    private void SignalFreshFrameAfterSpeech()
+    {
+        lock (_latestFrameLock)
+        {
+            _freshFrameAfterSpeech?.TrySetResult(true);
+            _freshFrameAfterSpeech = null;
+        }
+    }
+
+    private async Task<bool> WaitForFreshFrameAfterSpeechAsync(CancellationToken cancellationToken)
+    {
+        Task? pending;
+        lock (_latestFrameLock)
+        {
+            pending = _freshFrameAfterSpeech?.Task;
+        }
+
+        if (pending is null)
+        {
+            return true;
+        }
+
+        try
+        {
+            await pending.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (TimeoutException)
+        {
+            return false;
         }
     }
 
@@ -1361,6 +1628,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private void OnSessionReady(object? sender, SessionReadyEventArgs e)
     {
         _isWebSearchAvailable = e.IsWebSearchAvailable;
+        _webSearchMode = e.WebSearchMode;
         if (e.IsReconnect)
         {
             _hasReconnected = true;
@@ -1375,7 +1643,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             }
         }
 
-        _diagnostics.Log($"session setup: reconnect={(e.IsReconnect ? "yes" : "no")}, resumptionAttempt={(e.AttemptedResumption ? "yes" : "no")}, resumed={(e.WasSessionResumed ? "yes" : "no")}, web-search={(e.IsWebSearchAvailable ? "on" : "off")}");
+        _diagnostics.Log($"session setup: reconnect={(e.IsReconnect ? "yes" : "no")}, resumptionAttempt={(e.AttemptedResumption ? "yes" : "no")}, resumed={(e.WasSessionResumed ? "yes" : "no")}, web-search={e.WebSearchMode}");
         ConnectionStateChanged?.Invoke(this, EventArgs.Empty);
     }
     private async void OnConnectionAvailabilityChanged(object? sender, ConnectionAvailabilityChangedEventArgs e)
@@ -1591,7 +1859,15 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
+        if (_highlightOverlay.IsVisible)
+        {
+            // The marker is intentionally absent from captured frames. A newly sent frame therefore
+            // means the real screen changed; remove the stale pointer before the user clicks.
+            await ClearHighlightAsync().ConfigureAwait(false);
+        }
+
         StoreLatestZoomFrame(encoded);
+        SignalFreshFrameAfterSpeech();
 
         long uploadStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         await _liveClient.SendVideoFrameAsync(encoded.Base64Jpeg, cancellationToken).ConfigureAwait(false);
@@ -1882,49 +2158,3 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         SpeakingStateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

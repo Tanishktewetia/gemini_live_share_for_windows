@@ -28,9 +28,12 @@ await ValidateScreenShareNoticeFollowsRealFrameAsync();
 await ValidateReconnectContextRestoreAsync();
 await ValidateSentFrameDiagnosticsAsync();
 await ValidateDesktopIntentGroundingAsync();
+await ValidateCountIntentRequiresVisualContextAsync();
 await ValidateCountFollowUpUsesRecentTargetAsync();
 await ValidateUnreliableCountGuardAsync();
 await ValidateZoomRegionToolAsync();
+await ValidateHighlightElementToolAsync();
+await ValidateWebSearchToolAsync();
 await ValidateFreshFrameOnUserSpeechAsync();
 ValidateGlobalHotkeySettings();
 ValidatePlaybackQueueIsLossless();
@@ -736,13 +739,14 @@ static async Task ValidateDesktopIntentGroundingAsync()
         new FakeAudioCapture(),
         new FakeAudioPlayback(),
         client,
-        new FakeScreenCapture(),
-        new FakeImageProcessing(),
+        new FrameProducingScreenCapture(1),
+        new EncodingImageProcessing(),
         history,
         desktopAutomation: new FakeDesktopAutomationService(iconCount: 56, taskbarCount: 13));
 
     await orchestrator.StartAsync("test-key");
     await orchestrator.SetScreenShareEnabledAsync(true);
+    await WaitUntilAsync(() => client.SentInOrder.Any(item => item == "frame"), "visual context did not become active");
 
     client.EmitTranscription("user", "How many icons are there on my desktop?");
     await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("Say exactly", StringComparison.OrdinalIgnoreCase) && text.Contains("56 desktop icons", StringComparison.OrdinalIgnoreCase)),
@@ -759,6 +763,29 @@ static async Task ValidateDesktopIntentGroundingAsync()
 
     await orchestrator.StopAsync();
 }
+static async Task ValidateCountIntentRequiresVisualContextAsync()
+{
+    FakeLiveClient client = new();
+    RecordingChatHistory history = new();
+    SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(),
+        new FakeAudioPlayback(),
+        client,
+        new FrameProducingScreenCapture(1),
+        new EncodingImageProcessing(),
+        history,
+        desktopAutomation: new FakeDesktopAutomationService(iconCount: 56, taskbarCount: 13));
+
+    await orchestrator.StartAsync("test-key");
+    // keep screen sharing OFF: deterministic visual count must not run yet.
+    client.EmitTranscription("user", "How many icons are there on my desktop?");
+    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains(GeminiLiveClient.NoScreenReply, StringComparison.Ordinal)),
+        "count intent without visual context did not produce no-screen authoritative reply");
+    Require(!client.TextInputs.Any(text => text.Contains("56 desktop icons", StringComparison.OrdinalIgnoreCase)),
+        "count was emitted before visual context became active");
+
+    await orchestrator.StopAsync();
+}
 static async Task ValidateCountFollowUpUsesRecentTargetAsync()
 {
     FakeLiveClient client = new();
@@ -767,13 +794,14 @@ static async Task ValidateCountFollowUpUsesRecentTargetAsync()
         new FakeAudioCapture(),
         new FakeAudioPlayback(),
         client,
-        new FakeScreenCapture(),
-        new FakeImageProcessing(),
+        new FrameProducingScreenCapture(1),
+        new EncodingImageProcessing(),
         history,
         desktopAutomation: new FakeDesktopAutomationService(iconCount: 56, taskbarCount: 13));
 
     await orchestrator.StartAsync("test-key");
     await orchestrator.SetScreenShareEnabledAsync(true);
+    await WaitUntilAsync(() => client.SentInOrder.Any(item => item == "frame"), "visual context did not become active");
 
     client.EmitTranscription("user", "How many icons are present on my desktop excluding taskbar?");
     await WaitUntilAsync(() => client.TextInputs.Count(text => text.Contains("56 desktop icons", StringComparison.OrdinalIgnoreCase)) == 1,
@@ -793,13 +821,14 @@ static async Task ValidateUnreliableCountGuardAsync()
         new FakeAudioCapture(),
         new FakeAudioPlayback(),
         client,
-        new FakeScreenCapture(),
-        new FakeImageProcessing(),
+        new FrameProducingScreenCapture(1),
+        new EncodingImageProcessing(),
         history,
         desktopAutomation: new FakeDesktopAutomationService(iconCount: 0, taskbarCount: 0, desktopReliable: false, taskbarReliable: false));
 
     await orchestrator.StartAsync("test-key");
     await orchestrator.SetScreenShareEnabledAsync(true);
+    await WaitUntilAsync(() => client.SentInOrder.Any(item => item == "frame"), "visual context did not become active");
 
     client.EmitTranscription("user", "How many icons are there on my desktop?");
     await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("can't verify an exact desktop icon count", StringComparison.OrdinalIgnoreCase)),
@@ -855,6 +884,68 @@ static async Task ValidateZoomRegionToolAsync()
         "zoom_region response did not return the zoom model answer");
     Require(zoom.Calls == 1, "zoom model was not called exactly once");
     Require(zoom.LastQuestion == "What does the small button text say?", "zoom question did not round-trip");
+    await orchestrator.StopAsync();
+}
+
+static async Task ValidateHighlightElementToolAsync()
+{
+    FakeLiveClient client = new();
+    RecordingHighlightOverlay overlay = new();
+    await using SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(),
+        new FakeAudioPlayback(),
+        client,
+        new FakeScreenCapture(),
+        new FakeImageProcessing(),
+        new FakeChatHistory(),
+        desktopAutomation: new FakeDesktopAutomationService(iconCount: 0, taskbarCount: 0),
+        highlightOverlay: overlay);
+
+    await orchestrator.StartAsync("test-key");
+    client.EmitToolCalls([
+        new ToolCallRequest(
+            "highlight-1",
+            "highlight_element",
+            JsonSerializer.SerializeToElement(new { name = "Codex", role = "button" }))
+    ]);
+
+    await WaitUntilAsync(() => client.ToolResponses.Count > 0, "highlight_element tool response was not sent");
+    JsonElement response = client.ToolResponses[^1].Response;
+    Require(response.GetProperty("ok").GetBoolean(), "highlight_element did not succeed");
+    Require(response.GetProperty("selected").GetProperty("name").GetString() == "Codex",
+        "highlight_element selected the wrong control");
+    Require(overlay.ShowCalls == 1 && overlay.LastBounds.Width == 80 && overlay.LastBounds.Height == 30,
+        "highlight overlay did not receive the UI Automation bounds");
+    await orchestrator.StopAsync();
+}
+
+static async Task ValidateWebSearchToolAsync()
+{
+    FakeLiveClient client = new();
+    FakeWebSearchService search = new();
+    await using SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(),
+        new FakeAudioPlayback(),
+        client,
+        new FakeScreenCapture(),
+        new FakeImageProcessing(),
+        new FakeChatHistory(),
+        webSearchService: search);
+
+    await orchestrator.StartAsync("test-key");
+    client.EmitToolCalls([
+        new ToolCallRequest(
+            "search-1",
+            "web_search",
+            JsonSerializer.SerializeToElement(new { query = "who makes Antigravity" }))
+    ]);
+
+    await WaitUntilAsync(() => client.ToolResponses.Count > 0, "web_search tool response was not sent");
+    JsonElement response = client.ToolResponses[^1].Response;
+    Require(response.GetProperty("ok").GetBoolean(), "web_search did not succeed");
+    Require(response.GetProperty("summary").GetString() == "A sourced test result.",
+        "web_search returned the wrong summary");
+    Require(search.LastQuery == "who makes Antigravity", "web_search query did not round-trip");
     await orchestrator.StopAsync();
 }
 
@@ -946,7 +1037,9 @@ file sealed class FakeAudioPlayback : IAudioPlaybackService
 file sealed class FakeLiveClient : IGeminiLiveClient
 {
     public event EventHandler<byte[]>? AudioReceived;
+#pragma warning disable CS0067
     public event EventHandler? TurnCompleted;
+#pragma warning restore CS0067
     public event EventHandler? Interrupted;
     public event EventHandler<string>? StatusChanged { add { } remove { } }
     public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived;
@@ -1079,6 +1172,40 @@ file sealed class RecordingImageProcessing : IImageProcessingService
     }
 }
 
+file sealed class RecordingHighlightOverlay : IHighlightOverlayService
+{
+    public bool IsVisible { get; private set; }
+    public int ShowCalls { get; private set; }
+    public System.Drawing.Rectangle LastBounds { get; private set; }
+
+    public Task ShowAsync(System.Drawing.Rectangle bounds, string label, TimeSpan duration, CancellationToken cancellationToken = default)
+    {
+        ShowCalls++;
+        LastBounds = bounds;
+        IsVisible = true;
+        return Task.CompletedTask;
+    }
+
+    public Task ClearAsync(CancellationToken cancellationToken = default)
+    {
+        IsVisible = false;
+        return Task.CompletedTask;
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+file sealed class FakeWebSearchService : IWebSearchService
+{
+    public string? LastQuery { get; private set; }
+
+    public Task<WebSearchResult> SearchAsync(string apiKey, string query, CancellationToken cancellationToken = default)
+    {
+        LastQuery = query;
+        return Task.FromResult(new WebSearchResult("A sourced test result.", ["Example source"], true));
+    }
+}
+
 file sealed class StaticZoomVisionService(string answer) : IZoomVisionService
 {
     public int Calls { get; private set; }
@@ -1162,6 +1289,11 @@ file sealed class FakeDesktopAutomationService(
             .Select(index => new DesktopItemSnapshot($"Icon {index}", "ControlType.ListItem", new System.Drawing.Rectangle((index % 10) * 10, (index / 10) * 10, 10, 10)))
             .ToArray();
 
+    public IReadOnlyList<DesktopItemSnapshot> FindElementsByNameRole(string name, string? role) =>
+        name.Contains("Codex", StringComparison.OrdinalIgnoreCase)
+            ? [new DesktopItemSnapshot("Codex", "ControlType.Button", new System.Drawing.Rectangle(100, 100, 80, 30))]
+            : [];
+
     public DesktopIconCountSnapshot GetDesktopIconCount()
     {
         IReadOnlyList<DesktopItemSnapshot> items = ListDesktopIcons();
@@ -1209,23 +1341,3 @@ file sealed class FakeChatHistory : IChatHistoryRepository
     public Task DeleteSessionAsync(string sessionId) => Task.CompletedTask;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

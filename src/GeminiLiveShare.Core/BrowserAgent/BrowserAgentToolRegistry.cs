@@ -13,6 +13,8 @@ public sealed class BrowserAgentToolRegistry
             Task.FromResult(JsonSerializer.SerializeToElement(new { }));
         _handlers["get_form_fields"] = static (_, _) =>
             Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+        _handlers["find_element"] = static (_, _) =>
+            Task.FromResult(JsonSerializer.SerializeToElement(new { }));
     }
 
     public bool Contains(string toolName) =>

@@ -4,6 +4,7 @@ using GeminiLiveShare.App.Views;
 using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.BrowserAgent;
 using GeminiLiveShare.Core.Diagnostics;
+using GeminiLiveShare.Core.Desktop;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
@@ -42,7 +43,12 @@ public partial class App : System.Windows.Application
                 filterSettings),
             chatHistory,
             _browserAgentBridge,
-            new FileSessionDiagnostics(sentFramesDirectory: diagnosticsSettings.SentFramesDirectory));
+            new FileSessionDiagnostics(sentFramesDirectory: diagnosticsSettings.SentFramesDirectory),
+            diagnosticsSettings,
+            new DesktopAutomationService(),
+            new GeminiZoomVisionService(),
+            new HighlightOverlayService(),
+            new GeminiWebSearchService());
 
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory, browserAgentBridge: _browserAgentBridge);
         MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings, diagnosticsSettings, _browserAgentBridge);
