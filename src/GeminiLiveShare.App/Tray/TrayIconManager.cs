@@ -10,6 +10,7 @@ public sealed class TrayIconManager : IDisposable
     private readonly Action _toggleOverlay;
     private readonly Action _exit;
     private bool _isDisposed;
+    private bool _minimizeTipShown;
 
     public TrayIconManager(Action open, Action toggleOverlay, Action exit)
     {
@@ -45,6 +46,21 @@ public sealed class TrayIconManager : IDisposable
         _notifyIcon.Visible = false;
         _notifyIcon.ContextMenuStrip?.Dispose();
         _notifyIcon.Dispose();
+    }
+
+    public void ShowMinimizedToTrayHint()
+    {
+        if (_isDisposed || _minimizeTipShown)
+        {
+            return;
+        }
+
+        _minimizeTipShown = true;
+        _notifyIcon.ShowBalloonTip(
+            timeout: 2200,
+            tipTitle: "GeminiLiveShare is still running",
+            tipText: "Use the tray icon to reopen the app or choose Exit to fully quit.",
+            tipIcon: Forms.ToolTipIcon.Info);
     }
 
     private void OnDoubleClick(object? sender, EventArgs e) => _open();

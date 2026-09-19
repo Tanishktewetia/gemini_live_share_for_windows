@@ -133,11 +133,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Closing the window must terminate the process. The tray remains available
-        // for explicit minimize/restore behavior only.
-        _isExiting = true;
-        _trayIconManager.Dispose();
-        System.Windows.Application.Current.Shutdown();
+        // Keep the app alive in the tray when the user closes the main window.
+        // The process should end only through the tray Exit command.
+        e.Cancel = true;
+        MinimizeToTray();
+    }
+
+    private void MinimizeToTray()
+    {
+        ShowInTaskbar = false;
+        Hide();
+        _trayIconManager.ShowMinimizedToTrayHint();
     }
 
     public void RestoreFromTray()
@@ -146,6 +152,7 @@ public partial class MainWindow : Window
         {
             if (!IsVisible)
             {
+                ShowInTaskbar = true;
                 Show();
             }
 
@@ -725,6 +732,14 @@ public partial class MainWindow : Window
         _overlayHotkey = null;
         _windowSource?.RemoveHook(WindowMessageHook);
         _windowSource = null;
+
+        // Safety guard: if the window ever closes without the explicit tray Exit command,
+        // shut down the process so no hidden orphan instance keeps terminals blocked.
+        if (!_isExiting)
+        {
+            _isExiting = true;
+            System.Windows.Application.Current.Shutdown();
+        }
     }
 
     private GlobalHotkey CreateGlobalHotkey(GlobalHotkeyConfiguration configuration) =>
