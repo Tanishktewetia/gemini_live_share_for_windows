@@ -1109,8 +1109,11 @@ file sealed class FakeAudioCapture : IAudioCaptureService
 {
     public event EventHandler<byte[]>? AudioCaptured { add { } remove { } }
     public event EventHandler<AudioCaptureFailedEventArgs>? CaptureFailed { add { } remove { } }
+    public event EventHandler<bool>? UserSpeakingChanged { add { } remove { } }
     public bool IsCapturing { get; private set; }
     public bool IsEchoCancellationActive => false;
+    public IReadOnlyList<AudioInputDeviceInfo> InputDevices => Array.Empty<AudioInputDeviceInfo>();
+    public int SelectedInputDeviceNumber { get; set; } = -1;
     public void Start() => IsCapturing = true;
     public void Stop() => IsCapturing = false;
     public void Dispose() { }

@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Windows;
 using GeminiLiveShare.App.ViewModels;
 using GeminiLiveShare.App.Views;
@@ -18,22 +19,36 @@ namespace GeminiLiveShare.App;
 /// </summary>
 public partial class App : System.Windows.Application
 {
+    private const string SingleInstanceMutexName = "Global\\GeminiLiveShare.App.SingleInstance";
+    private Mutex? _singleInstanceMutex;
     private SessionOrchestrator? _sessionOrchestrator;
     private BrowserAgentBridge? _browserAgentBridge;
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool createdNew);
+        if (!createdNew)
+        {
+            _singleInstanceMutex.Dispose();
+            _singleInstanceMutex = null;
+            Shutdown(1);
+            return;
+        }
+
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
         base.OnStartup(e);
 
         ApiKeyVaultService apiKeyVault = new();
         SensitiveContentFilterSettings filterSettings = new();
         OverlayAppearanceSettings overlaySettings = new();
         DiagnosticsDebugSettings diagnosticsSettings = new();
+        HighlightSettings highlightSettings = new();
+        AudioCaptureService audioCapture = new();
         ChatHistoryRepository chatHistory = new();
         _browserAgentBridge = new BrowserAgentBridge();
         _browserAgentBridge.Start();
         _sessionOrchestrator = new SessionOrchestrator(
-            new AudioCaptureService(),
+            audioCapture,
             new AudioPlaybackService(),
             new GeminiLiveClient(),
             new ScreenCaptureService(),
@@ -47,27 +62,29 @@ public partial class App : System.Windows.Application
             diagnosticsSettings,
             new DesktopAutomationService(),
             new GeminiZoomVisionService(),
-            new HighlightOverlayService(),
-            new GeminiWebSearchService());
+            new HighlightOverlayService(highlightSettings),
+            new GeminiWebSearchService(),
+            highlightSettings);
 
         MainViewModel viewModel = new(_sessionOrchestrator, apiKeyVault, chatHistory, browserAgentBridge: _browserAgentBridge);
-        MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings, diagnosticsSettings, _browserAgentBridge);
+        MainWindow window = new(viewModel, apiKeyVault, filterSettings, _sessionOrchestrator, overlaySettings, diagnosticsSettings, _browserAgentBridge, highlightSettings, audioCapture);
         MainWindow = window;
         window.Show();
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
-        if (_sessionOrchestrator is not null)
+        try
         {
-            _sessionOrchestrator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            _sessionOrchestrator?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            _browserAgentBridge?.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
-
-        if (_browserAgentBridge is not null)
+        finally
         {
-            _browserAgentBridge.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            _singleInstanceMutex?.ReleaseMutex();
+            _singleInstanceMutex?.Dispose();
+            _singleInstanceMutex = null;
+            base.OnExit(e);
         }
-
-        base.OnExit(e);
     }
 }

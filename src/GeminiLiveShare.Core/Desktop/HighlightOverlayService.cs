@@ -5,6 +5,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Controls;
 using System.Windows.Threading;
+using GeminiLiveShare.Core.Interop;
 
 namespace GeminiLiveShare.Core.Desktop;
 
@@ -30,6 +31,12 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
     private CancellationTokenSource? _autoClearCancellation;
     private volatile bool _isVisible;
     private bool _disposed;
+    private readonly HighlightSettings _settings;
+
+    public HighlightOverlayService(HighlightSettings? settings = null)
+    {
+        _settings = settings ?? new HighlightSettings();
+    }
 
     public bool IsVisible => _isVisible;
 
@@ -48,7 +55,7 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
         Dispatcher dispatcher = _dispatcher!;
         await dispatcher.InvokeAsync(() =>
         {
-            _window!.ShowHighlight(bounds, label);
+            _window!.ShowHighlight(bounds, label, _settings.ShowArrow);
             _isVisible = true;
             ScheduleAutoClear(duration);
         }).Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -154,6 +161,7 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
     {
         CancelAutoClear();
         TimeSpan timeout = duration <= TimeSpan.Zero ? TimeSpan.FromSeconds(8) : duration;
+        timeout = timeout < TimeSpan.FromSeconds(5) ? TimeSpan.FromSeconds(5) : timeout;
         timeout = timeout > TimeSpan.FromSeconds(30) ? TimeSpan.FromSeconds(30) : timeout;
         CancellationTokenSource cancellation = new();
         lock (_gate)
@@ -220,6 +228,7 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
     {
         private readonly Border _border;
         private readonly TextBlock _label;
+        private readonly System.Windows.Shapes.Line _arrow;
 
         public HighlightWindow()
         {
@@ -241,6 +250,10 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
                 CornerRadius = new CornerRadius(8),
                 Background = new SolidColorBrush(Color.FromArgb(18, 255, 176, 59))
             };
+            _arrow = new System.Windows.Shapes.Line
+            {
+                Stroke = new SolidColorBrush(Color.FromRgb(255, 92, 92)), StrokeThickness = 4, Visibility = Visibility.Collapsed
+            };
             _label = new TextBlock
             {
                 Margin = new Thickness(8),
@@ -253,6 +266,7 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
                 Text = string.Empty
             };
             root.Children.Add(_border);
+            root.Children.Add(_arrow);
             root.Children.Add(_label);
             Content = root;
             Visibility = Visibility.Hidden;
@@ -284,7 +298,7 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
             _ = SetWindowDisplayAffinity(hwnd, WdaExcludeFromCapture);
         }
 
-        public void ShowHighlight(DrawingRectangle bounds, string label)
+        public void ShowHighlight(DrawingRectangle bounds, string label, bool showArrow)
         {
             if (PresentationSource.FromVisual(this) is not HwndSource source)
             {
@@ -302,12 +316,16 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
             Width = Math.Max(24, bottomRight.X - topLeft.X);
             Height = Math.Max(24, bottomRight.Y - topLeft.Y);
             _label.Text = string.IsNullOrWhiteSpace(label) ? "Target" : label;
+            _arrow.X1 = Math.Max(4, Width - 4); _arrow.Y1 = 4;
+            _arrow.X2 = Math.Max(10, Width * 0.62); _arrow.Y2 = Math.Max(10, Height * 0.62);
+            _arrow.Visibility = showArrow ? Visibility.Visible : Visibility.Collapsed;
             Visibility = Visibility.Visible;
             Show();
         }
 
         public void HideHighlight()
         {
+            _arrow.Visibility = Visibility.Collapsed;
             Visibility = Visibility.Hidden;
             Hide();
         }

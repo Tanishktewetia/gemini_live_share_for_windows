@@ -12,14 +12,27 @@ public sealed class AudioCaptureService : IAudioCaptureService
     private readonly object _syncRoot = new();
     private EchoCancellingMicrophone? _echoCancellingMicrophone;
     private WaveInEvent? _waveIn;
+    private int _selectedInputDeviceNumber = -1;
+    private DateTime _lastSpeechUtc;
+    private bool _userSpeaking;
 
     public event EventHandler<byte[]>? AudioCaptured;
 
     public event EventHandler<AudioCaptureFailedEventArgs>? CaptureFailed;
 
+    public event EventHandler<bool>? UserSpeakingChanged;
+
     public bool IsCapturing => _echoCancellingMicrophone is not null || _waveIn is not null;
 
     public bool IsEchoCancellationActive => _echoCancellingMicrophone is not null;
+
+    public IReadOnlyList<AudioInputDeviceInfo> InputDevices { get; } = EnumerateInputDevices();
+
+    public int SelectedInputDeviceNumber
+    {
+        get => _selectedInputDeviceNumber;
+        set => _selectedInputDeviceNumber = value;
+    }
 
     public void Start()
     {
@@ -32,6 +45,12 @@ public sealed class AudioCaptureService : IAudioCaptureService
 
             // Prefer Windows acoustic echo cancellation so Gemini's speaker output is not streamed back
             // to Gemini as user speech (which makes it interrupt itself when headphones are not used).
+            if (_selectedInputDeviceNumber >= 0)
+            {
+                StartRawCapture(_selectedInputDeviceNumber);
+                return;
+            }
+
             EchoCancellingMicrophone microphone = new(OnEchoCancelledAudio, OnEchoCancellationFailed);
             try
             {
@@ -62,6 +81,7 @@ public sealed class AudioCaptureService : IAudioCaptureService
             _waveIn = null;
             if (waveIn is null)
             {
+                SetUserSpeaking(false);
                 return;
             }
 
@@ -69,6 +89,7 @@ public sealed class AudioCaptureService : IAudioCaptureService
             waveIn.DataAvailable -= OnDataAvailable;
             waveIn.RecordingStopped -= OnRecordingStopped;
             waveIn.Dispose();
+            SetUserSpeaking(false);
         }
     }
 
@@ -77,10 +98,11 @@ public sealed class AudioCaptureService : IAudioCaptureService
         Stop();
     }
 
-    private void StartRawCapture()
+    private void StartRawCapture(int deviceNumber = -1)
     {
         WaveInEvent waveIn = new()
         {
+            DeviceNumber = deviceNumber,
             WaveFormat = new WaveFormat(InputSampleRate, BitsPerSample, Channels),
             // Keep capture frames short so speech reaches Gemini without waiting for
             // a large driver buffer to fill. Two buffers provide enough headroom for
@@ -106,7 +128,18 @@ public sealed class AudioCaptureService : IAudioCaptureService
         }
     }
 
-    private void OnEchoCancelledAudio(byte[] audio) => AudioCaptured?.Invoke(this, audio);
+    private static IReadOnlyList<AudioInputDeviceInfo> EnumerateInputDevices()
+    {
+        List<AudioInputDeviceInfo> devices = new() { new AudioInputDeviceInfo(-1, "System default (recommended)") };
+        for (int i = 0; i < WaveIn.DeviceCount; i++)
+        {
+            try { devices.Add(new AudioInputDeviceInfo(i, WaveIn.GetCapabilities(i).ProductName)); }
+            catch { }
+        }
+        return devices;
+    }
+
+    private void OnEchoCancelledAudio(byte[] audio) { UpdateSpeechActivity(audio); AudioCaptured?.Invoke(this, audio); }
 
     private void OnEchoCancellationFailed(Exception exception)
     {
@@ -142,7 +175,29 @@ public sealed class AudioCaptureService : IAudioCaptureService
 
         byte[] audio = new byte[e.BytesRecorded];
         Buffer.BlockCopy(e.Buffer, 0, audio, 0, e.BytesRecorded);
+        UpdateSpeechActivity(audio);
         AudioCaptured?.Invoke(this, audio);
+    }
+
+    private void UpdateSpeechActivity(byte[] audio)
+    {
+        long sum = 0; int samples = 0;
+        for (int i = 0; i + 1 < audio.Length; i += 2)
+        {
+            short sample = BitConverter.ToInt16(audio, i);
+            sum += (long)sample * sample; samples++;
+        }
+        double rms = samples == 0 ? 0 : Math.Sqrt((double)sum / samples);
+        DateTime now = DateTime.UtcNow;
+        if (rms >= 900) _lastSpeechUtc = now;
+        SetUserSpeaking(rms >= 900 || now - _lastSpeechUtc < TimeSpan.FromMilliseconds(280));
+    }
+
+    private void SetUserSpeaking(bool value)
+    {
+        if (_userSpeaking == value) return;
+        _userSpeaking = value;
+        UserSpeakingChanged?.Invoke(this, value);
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)

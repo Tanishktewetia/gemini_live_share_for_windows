@@ -15,6 +15,7 @@ using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.BrowserAgent;
 using GeminiLiveShare.Core.Diagnostics;
+using GeminiLiveShare.Core.Audio;
 
 namespace GeminiLiveShare.App.Views;
 public partial class MainWindow : Window
@@ -25,6 +26,8 @@ public partial class MainWindow : Window
     private readonly OverlayAppearanceSettings _overlaySettings;
     private readonly IDiagnosticsDebugSettings _diagnosticsSettings;
     private readonly BrowserAgentBridge _browserAgentBridge;
+    private readonly HighlightSettings _highlightSettings;
+    private readonly IAudioCaptureService _audioCapture;
     private readonly MainViewModel _viewModel;
     public SettingsViewModel SettingsViewModel { get; }
     private GlobalHotkey? _overlayHotkey;
@@ -45,7 +48,9 @@ public partial class MainWindow : Window
         SessionOrchestrator sessionOrchestrator,
         OverlayAppearanceSettings overlaySettings,
         IDiagnosticsDebugSettings diagnosticsSettings,
-        BrowserAgentBridge browserAgentBridge)
+        BrowserAgentBridge browserAgentBridge,
+        HighlightSettings? highlightSettings = null,
+        IAudioCaptureService? audioCapture = null)
     {
         _viewModel = viewModel;
         _apiKeyVault = apiKeyVault;
@@ -54,7 +59,9 @@ public partial class MainWindow : Window
         _overlaySettings = overlaySettings;
         _diagnosticsSettings = diagnosticsSettings;
         _browserAgentBridge = browserAgentBridge;
-        SettingsViewModel = new SettingsViewModel(_apiKeyVault, _filterSettings, _diagnosticsSettings, _overlaySettings);
+        _highlightSettings = highlightSettings ?? new HighlightSettings();
+        _audioCapture = audioCapture ?? new AudioCaptureService();
+        SettingsViewModel = new SettingsViewModel(_apiKeyVault, _filterSettings, _diagnosticsSettings, _overlaySettings, _highlightSettings, _audioCapture);
         _settingsHotkeyConfiguration = new GlobalHotkeySettings().Load();
         InitializeComponent();
         DataContext = viewModel;
@@ -126,8 +133,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        e.Cancel = true;
-        Hide();
+        // Closing the window must terminate the process. The tray remains
+        // available for explicit minimize/restore behavior only.
+        _isExiting = true;
+        _trayIconManager.Dispose();
     }
 
     public void RestoreFromTray()
@@ -749,7 +758,4 @@ public partial class MainWindow : Window
         }
     }
 }
-
-
-
 

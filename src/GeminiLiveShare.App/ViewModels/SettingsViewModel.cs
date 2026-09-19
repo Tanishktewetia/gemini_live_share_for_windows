@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using System.IO;
 using GeminiLiveShare.Core.Diagnostics;
+using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
 
@@ -12,6 +13,8 @@ public partial class SettingsViewModel : ObservableObject
     private readonly ISensitiveContentFilterSettings _filterSettings;
     private readonly IDiagnosticsDebugSettings _diagnosticsSettings;
     private readonly OverlayAppearanceSettings _overlaySettings;
+    private readonly HighlightSettings _highlightSettings;
+    private readonly IAudioCaptureService _audioCapture;
 
     [ObservableProperty]
     private string _statusMessage = string.Empty;
@@ -25,20 +28,38 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private bool _isOverlayDark;
 
+    [ObservableProperty]
+    private bool _isHighlightingEnabled;
+
+    [ObservableProperty]
+    private bool _showHighlightArrow;
+
+    [ObservableProperty]
+    private int _selectedInputDeviceNumber;
+
     public SettingsViewModel(
         IApiKeyVaultService apiKeyVault,
         ISensitiveContentFilterSettings filterSettings,
         IDiagnosticsDebugSettings diagnosticsSettings,
-        OverlayAppearanceSettings? overlaySettings = null)
+        OverlayAppearanceSettings? overlaySettings = null,
+        HighlightSettings? highlightSettings = null,
+        IAudioCaptureService? audioCapture = null)
     {
         _apiKeyVault = apiKeyVault;
         _filterSettings = filterSettings;
         _diagnosticsSettings = diagnosticsSettings;
         _overlaySettings = overlaySettings ?? new OverlayAppearanceSettings();
+        _highlightSettings = highlightSettings ?? new HighlightSettings();
+        _audioCapture = audioCapture ?? new AudioCaptureService();
         _isSensitiveContentFilteringEnabled = filterSettings.IsEnabled;
         _saveSentFramesForDiagnostics = diagnosticsSettings.SaveSentFrames;
         _isOverlayDark = _overlaySettings.Theme == OverlayTheme.Dark;
+        _isHighlightingEnabled = _highlightSettings.IsEnabled;
+        _showHighlightArrow = _highlightSettings.ShowArrow;
+        _selectedInputDeviceNumber = _audioCapture.SelectedInputDeviceNumber;
     }
+
+    public IReadOnlyList<AudioInputDeviceInfo> InputDevices => _audioCapture.InputDevices;
 
     public bool HasSavedApiKey => !string.IsNullOrWhiteSpace(_apiKeyVault.GetApiKey());
 
@@ -99,6 +120,12 @@ public partial class SettingsViewModel : ObservableObject
             StatusMessage = $"Could not save diagnostics setting: {ex.Message}";
         }
     }
+
+    partial void OnSelectedInputDeviceNumberChanged(int value) => _audioCapture.SelectedInputDeviceNumber = value;
+
+    partial void OnIsHighlightingEnabledChanged(bool value) => _highlightSettings.IsEnabled = value;
+
+    partial void OnShowHighlightArrowChanged(bool value) => _highlightSettings.ShowArrow = value;
 
     partial void OnIsOverlayDarkChanged(bool value)
     {

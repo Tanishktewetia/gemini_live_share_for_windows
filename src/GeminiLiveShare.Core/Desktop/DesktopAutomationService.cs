@@ -364,10 +364,12 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
                  metadata.Contains("folderview", StringComparison.Ordinal) ||
                  metadata.Contains("listview", StringComparison.Ordinal)) ? 100 : 0,
             "recent" or "recent_items" =>
-                metadata.Contains("recent", StringComparison.Ordinal) ||
-                (metadata.Contains("items view", StringComparison.Ordinal) &&
-                 !metadata.Contains("navigation", StringComparison.Ordinal) &&
-                 !metadata.Contains("tree", StringComparison.Ordinal)) ? 100 : 0,
+                !metadata.Contains("navigation", StringComparison.Ordinal) &&
+                !metadata.Contains("tree", StringComparison.Ordinal) &&
+                (metadata.Contains("items view", StringComparison.Ordinal) ||
+                 metadata.Contains("folderview", StringComparison.Ordinal) ||
+                 metadata.Contains("listview", StringComparison.Ordinal) ||
+                 metadata.Contains("recent", StringComparison.Ordinal)) ? 100 : 0,
             "desktop" =>
                 metadata.Contains("progman", StringComparison.Ordinal) ||
                 metadata.Contains("workerw", StringComparison.Ordinal) ||

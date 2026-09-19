@@ -2,6 +2,7 @@ using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.BrowserAgent;
 using GeminiLiveShare.Core.BrowserAgent.Models;
 using GeminiLiveShare.Core.Diagnostics;
+using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Desktop;
 using GeminiLiveShare.Core.Storage;
 using GeminiLiveShare.Core.Vision;
@@ -43,6 +44,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private readonly IZoomVisionService _zoomVisionService;
     private readonly IHighlightOverlayService _highlightOverlay;
     private readonly IWebSearchService _webSearchService;
+    private readonly HighlightSettings _highlightSettings;
     private readonly object _latestFrameLock = new();
     private TaskCompletionSource<bool>? _freshFrameAfterSpeech;
     private byte[]? _latestFullResolutionJpeg;
@@ -84,6 +86,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private CancellationTokenSource? _assistantWatchdogCancellation;
     private string? _pendingAudibleReplyUserPrompt;
     private bool _assistantAudioReceivedForPendingPrompt;
+    private bool _assistantSpeaking;
+    private bool _userSpeaking;
     private bool _assistantTurnAwaitingToolResponse;
     private int _toolCallsInFlight;
     private DateTimeOffset _lastSilentRecoveryUtc = DateTimeOffset.MinValue;
@@ -114,7 +118,8 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         IDesktopAutomationService? desktopAutomation = null,
         IZoomVisionService? zoomVisionService = null,
         IHighlightOverlayService? highlightOverlay = null,
-        IWebSearchService? webSearchService = null)
+        IWebSearchService? webSearchService = null,
+        HighlightSettings? highlightSettings = null)
     {
         _diagnostics = diagnostics ?? NullSessionDiagnostics.Instance;
         _diagnosticsSettings = diagnosticsSettings ?? new DiagnosticsDebugSettings();
@@ -123,6 +128,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _zoomVisionService = zoomVisionService ?? new GeminiZoomVisionService();
         _highlightOverlay = highlightOverlay ?? NullHighlightOverlayService.Instance;
         _webSearchService = webSearchService ?? new GeminiWebSearchService();
+        _highlightSettings = highlightSettings ?? new HighlightSettings();
         StatusChanged += (_, status) => _diagnostics.Log($"status: {status}");
         _audioCapture = audioCapture;
         _audioPlayback = audioPlayback;
@@ -132,6 +138,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _chatHistory = chatHistory;
         _browserAgentBridge = browserAgentBridge;
         _audioCapture.AudioCaptured += OnAudioCaptured;
+        _audioCapture.UserSpeakingChanged += OnUserSpeakingChanged;
         _liveClient.AudioReceived += OnAudioReceived;
         _liveClient.TurnCompleted += OnTurnCompleted;
         _liveClient.Interrupted += OnInterrupted;
@@ -409,6 +416,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     {
         await StopAsync().ConfigureAwait(false);
         _audioCapture.AudioCaptured -= OnAudioCaptured;
+        _audioCapture.UserSpeakingChanged -= OnUserSpeakingChanged;
         _audioCapture.CaptureFailed -= OnCaptureFailed;
         _liveClient.AudioReceived -= OnAudioReceived;
         _liveClient.TurnCompleted -= OnTurnCompleted;
@@ -440,6 +448,12 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         Interlocked.Increment(ref _micChunksCaptured);
         _microphoneAudio?.Writer.TryWrite(audio);
+    }
+
+    private void OnUserSpeakingChanged(object? sender, bool speaking)
+    {
+        _userSpeaking = speaking;
+        SetSpeakingState(_assistantSpeaking || _userSpeaking);
     }
 
     private void OnAudioReceived(object? sender, byte[] audio)
@@ -929,6 +943,13 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
+        if (_screenShareDesired || IsScreenShareOn)
+        {
+            _diagnostics.Log($"audio watchdog: suppressed recovery during screen share ({reason})");
+            StatusChanged?.Invoke(this, "Assistant audio was quiet; keeping screen share connected.");
+            return;
+        }
+
         StatusChanged?.Invoke(this, "No assistant audio detected; recovering session...");
         _diagnostics.Log($"audio watchdog: recovering from silent assistant turn ({reason})");
 
@@ -1068,6 +1089,15 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     private async Task<JsonElement> ExecuteHighlightElementToolCallAsync(ToolCallRequest call, CancellationToken cancellationToken)
     {
+        if (!_highlightSettings.IsEnabled)
+        {
+            return JsonSerializer.SerializeToElement(new
+            {
+                ok = false, found = false, disabled = true,
+                error = "Visual highlighting is disabled in Settings. Do not claim that a highlight was shown."
+            });
+        }
+
         if (!TryParseHighlightRequest(call.Args, out string name, out string? role, out string? location, out string parseError))
         {
             return JsonSerializer.SerializeToElement(new { ok = false, error = parseError });
@@ -1931,12 +1961,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return;
         }
 
-        if (_highlightOverlay.IsVisible)
-        {
-            // The marker is intentionally absent from captured frames. A newly sent frame therefore
-            // means the real screen changed; remove the stale pointer before the user clicks.
-            await ClearHighlightAsync().ConfigureAwait(false);
-        }
+        // Normal screen-share frames must not shorten a highlight lifetime.
 
         StoreLatestZoomFrame(encoded);
         SignalFreshFrameAfterSpeech();
@@ -2221,12 +2246,14 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     private void SetSpeakingState(bool isSpeaking)
     {
-        if (IsSpeaking == isSpeaking)
+        _assistantSpeaking = isSpeaking;
+        bool combined = _assistantSpeaking || _userSpeaking;
+        if (IsSpeaking == combined)
         {
             return;
         }
 
-        IsSpeaking = isSpeaking;
+        IsSpeaking = combined;
         SpeakingStateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
