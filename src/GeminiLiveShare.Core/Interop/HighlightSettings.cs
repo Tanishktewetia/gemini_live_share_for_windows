@@ -7,7 +7,6 @@ public sealed class HighlightSettings
     private readonly object _sync = new();
     private readonly string _path;
     private bool _isEnabled = true;
-    private bool _showArrow;
 
     public HighlightSettings(string? path = null)
     {
@@ -16,7 +15,6 @@ public sealed class HighlightSettings
     }
 
     public bool IsEnabled { get { lock (_sync) return _isEnabled; } set { lock (_sync) { _isEnabled = value; SaveUnsafe(); } } }
-    public bool ShowArrow { get { lock (_sync) return _showArrow; } set { lock (_sync) { _showArrow = value; SaveUnsafe(); } } }
 
     private void Load()
     {
@@ -26,7 +24,7 @@ public sealed class HighlightSettings
             {
                 if (!File.Exists(_path)) return;
                 Persisted? value = JsonSerializer.Deserialize<Persisted>(File.ReadAllText(_path));
-                if (value is not null) { _isEnabled = value.IsEnabled; _showArrow = value.ShowArrow; }
+                if (value is not null) { _isEnabled = value.IsEnabled;  }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
         }
@@ -37,10 +35,10 @@ public sealed class HighlightSettings
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            File.WriteAllText(_path, JsonSerializer.Serialize(new Persisted(_isEnabled, _showArrow)));
+            File.WriteAllText(_path, JsonSerializer.Serialize(new Persisted(_isEnabled)));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
-    private sealed record Persisted(bool IsEnabled, bool ShowArrow);
+    private sealed record Persisted(bool IsEnabled);
 }

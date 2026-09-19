@@ -133,10 +133,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Closing the window must terminate the process. The tray remains
-        // available for explicit minimize/restore behavior only.
+        // Closing the window must terminate the process. The tray remains available
+        // for explicit minimize/restore behavior only.
         _isExiting = true;
         _trayIconManager.Dispose();
+        System.Windows.Application.Current.Shutdown();
     }
 
     public void RestoreFromTray()

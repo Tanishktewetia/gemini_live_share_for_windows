@@ -55,7 +55,7 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
         Dispatcher dispatcher = _dispatcher!;
         await dispatcher.InvokeAsync(() =>
         {
-            _window!.ShowHighlight(bounds, label, _settings.ShowArrow);
+            _window!.ShowHighlight(bounds);
             _isVisible = true;
             ScheduleAutoClear(duration);
         }).Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -227,7 +227,6 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
     private sealed class HighlightWindow : Window
     {
         private readonly Border _border;
-        private readonly TextBlock _label;
         private readonly System.Windows.Shapes.Line _arrow;
 
         public HighlightWindow()
@@ -254,20 +253,8 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
             {
                 Stroke = new SolidColorBrush(Color.FromRgb(255, 92, 92)), StrokeThickness = 4, Visibility = Visibility.Collapsed
             };
-            _label = new TextBlock
-            {
-                Margin = new Thickness(8),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                VerticalAlignment = VerticalAlignment.Top,
-                Background = new SolidColorBrush(Color.FromArgb(210, 30, 30, 30)),
-                Foreground = Brushes.White,
-                FontSize = 12,
-                Padding = new Thickness(6, 3, 6, 3),
-                Text = string.Empty
-            };
             root.Children.Add(_border);
             root.Children.Add(_arrow);
-            root.Children.Add(_label);
             Content = root;
             Visibility = Visibility.Hidden;
         }
@@ -298,7 +285,7 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
             _ = SetWindowDisplayAffinity(hwnd, WdaExcludeFromCapture);
         }
 
-        public void ShowHighlight(DrawingRectangle bounds, string label, bool showArrow)
+        public void ShowHighlight(DrawingRectangle bounds)
         {
             if (PresentationSource.FromVisual(this) is not HwndSource source)
             {
@@ -315,10 +302,9 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
             Top = topLeft.Y;
             Width = Math.Max(24, bottomRight.X - topLeft.X);
             Height = Math.Max(24, bottomRight.Y - topLeft.Y);
-            _label.Text = string.IsNullOrWhiteSpace(label) ? "Target" : label;
             _arrow.X1 = Math.Max(4, Width - 4); _arrow.Y1 = 4;
             _arrow.X2 = Math.Max(10, Width * 0.62); _arrow.Y2 = Math.Max(10, Height * 0.62);
-            _arrow.Visibility = showArrow ? Visibility.Visible : Visibility.Collapsed;
+            _arrow.Visibility = Visibility.Visible;
             Visibility = Visibility.Visible;
             Show();
         }

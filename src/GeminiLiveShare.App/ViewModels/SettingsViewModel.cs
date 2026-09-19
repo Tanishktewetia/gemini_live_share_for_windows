@@ -31,8 +31,6 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private bool _isHighlightingEnabled;
 
-    [ObservableProperty]
-    private bool _showHighlightArrow;
 
     [ObservableProperty]
     private int _selectedInputDeviceNumber;
@@ -55,7 +53,6 @@ public partial class SettingsViewModel : ObservableObject
         _saveSentFramesForDiagnostics = diagnosticsSettings.SaveSentFrames;
         _isOverlayDark = _overlaySettings.Theme == OverlayTheme.Dark;
         _isHighlightingEnabled = _highlightSettings.IsEnabled;
-        _showHighlightArrow = _highlightSettings.ShowArrow;
         _selectedInputDeviceNumber = _audioCapture.SelectedInputDeviceNumber;
     }
 
@@ -124,8 +121,6 @@ public partial class SettingsViewModel : ObservableObject
     partial void OnSelectedInputDeviceNumberChanged(int value) => _audioCapture.SelectedInputDeviceNumber = value;
 
     partial void OnIsHighlightingEnabledChanged(bool value) => _highlightSettings.IsEnabled = value;
-
-    partial void OnShowHighlightArrowChanged(bool value) => _highlightSettings.ShowArrow = value;
 
     partial void OnIsOverlayDarkChanged(bool value)
     {

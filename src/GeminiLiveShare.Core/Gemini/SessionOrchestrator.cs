@@ -1042,7 +1042,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             List<ToolResponsePayload> responses = new(e.Calls.Count);
             foreach (ToolCallRequest call in e.Calls)
             {
+                long toolStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                 JsonElement response = await ExecuteToolCallAsync(call, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+                double toolMs = System.Diagnostics.Stopwatch.GetElapsedTime(toolStarted).TotalMilliseconds;
+                _diagnostics.Log($"tool execution completed: name={call.Name}, elapsed={toolMs:0}ms");
                 responses.Add(new ToolResponsePayload(call.Id, call.Name, response));
                 LogToolResponse(call.Name, response);
             }
@@ -1103,7 +1106,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             return JsonSerializer.SerializeToElement(new { ok = false, error = parseError });
         }
 
+        long lookupStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         IReadOnlyList<DesktopItemSnapshot> matches = _desktopAutomation.FindElementsByNameRole(name, role, location);
+        double lookupMs = System.Diagnostics.Stopwatch.GetElapsedTime(lookupStarted).TotalMilliseconds;
+        _diagnostics.Log($"highlight lookup completed: elapsed={lookupMs:0}ms, matches={matches.Count}, location={(string.IsNullOrWhiteSpace(location) ? "foreground" : location)}");
         string source = "ui_automation";
 
         if (matches.Count == 0)
@@ -1112,7 +1118,9 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             {
                 ok = false,
                 found = false,
-                error = $"No visible enabled element named '{name}' was found. Ask the user to move the pointer over the target."
+                error = string.IsNullOrWhiteSpace(location) || (!location.Equals("desktop", StringComparison.OrdinalIgnoreCase) && !location.Equals("taskbar", StringComparison.OrdinalIgnoreCase))
+                    ? $"No visible enabled element named '{name}' was found in the focused foreground window. Ask the user to click/focus the intended application window, then try again. Do not search or highlight another window."
+                    : $"No visible enabled element named '{name}' was found. Ask the user to move the pointer over the target."
             });
         }
 

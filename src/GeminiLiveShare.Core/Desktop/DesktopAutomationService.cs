@@ -234,11 +234,15 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
                 }
             }
 
-            roots.Add((AutomationElement.RootElement, 1));
             string needle = name.Trim();
             ControlType[]? preferredTypes = ResolveRoleControlTypes(role);
             List<HighlightCandidate> candidates = new();
             string normalizedLocation = NormalizeLocation(location);
+            bool allowGlobalShellSearch = normalizedLocation is "desktop" or "taskbar";
+            if (allowGlobalShellSearch)
+            {
+                roots.Add((AutomationElement.RootElement, 1));
+            }
             bool hasLocationHint = normalizedLocation.Length > 0;
             Condition baseCondition = new AndCondition(
                 new PropertyCondition(AutomationElement.IsOffscreenProperty, false),
