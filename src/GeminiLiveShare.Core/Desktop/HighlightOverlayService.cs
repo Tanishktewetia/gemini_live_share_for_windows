@@ -227,7 +227,6 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
     private sealed class HighlightWindow : Window
     {
         private readonly Border _border;
-        private readonly System.Windows.Shapes.Line _arrow;
 
         public HighlightWindow()
         {
@@ -249,12 +248,7 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
                 CornerRadius = new CornerRadius(8),
                 Background = new SolidColorBrush(Color.FromArgb(18, 255, 176, 59))
             };
-            _arrow = new System.Windows.Shapes.Line
-            {
-                Stroke = new SolidColorBrush(Color.FromRgb(255, 92, 92)), StrokeThickness = 4, Visibility = Visibility.Collapsed
-            };
             root.Children.Add(_border);
-            root.Children.Add(_arrow);
             Content = root;
             Visibility = Visibility.Hidden;
         }
@@ -302,16 +296,12 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
             Top = topLeft.Y;
             Width = Math.Max(24, bottomRight.X - topLeft.X);
             Height = Math.Max(24, bottomRight.Y - topLeft.Y);
-            _arrow.X1 = Math.Max(4, Width - 4); _arrow.Y1 = 4;
-            _arrow.X2 = Math.Max(10, Width * 0.62); _arrow.Y2 = Math.Max(10, Height * 0.62);
-            _arrow.Visibility = Visibility.Visible;
             Visibility = Visibility.Visible;
             Show();
         }
 
         public void HideHighlight()
         {
-            _arrow.Visibility = Visibility.Collapsed;
             Visibility = Visibility.Hidden;
             Hide();
         }
