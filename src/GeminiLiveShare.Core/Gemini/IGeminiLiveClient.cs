@@ -16,6 +16,8 @@ public interface IGeminiLiveClient : IAsyncDisposable
 
     event EventHandler<SessionReadyEventArgs>? SessionReady;
 
+    event EventHandler<ToolCallsEventArgs>? ToolCallsReceived;
+
     bool IsConnected { get; }
 
     Task ConnectAsync(string apiKey, CancellationToken cancellationToken = default);
@@ -27,6 +29,8 @@ public interface IGeminiLiveClient : IAsyncDisposable
     Task SendTextAsync(string text, CancellationToken cancellationToken = default);
 
     Task SendAudioStreamEndAsync(CancellationToken cancellationToken = default);
+
+    Task SendToolResponseAsync(IReadOnlyList<ToolResponsePayload> responses, CancellationToken cancellationToken = default);
 
     Task DisconnectAsync(CancellationToken cancellationToken = default);
 }

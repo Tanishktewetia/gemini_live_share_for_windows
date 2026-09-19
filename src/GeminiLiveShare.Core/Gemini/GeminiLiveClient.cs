@@ -22,6 +22,53 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
     // setup with "You exceeded your current quota" even though plain Live sessions work (measured 2026-09-17), so the
     // client falls back to a session without search for the rest of the app run.
     private static volatile bool s_webSearchUnavailable;
+    private static readonly FunctionDeclaration[] s_desktopFunctionDeclarations =
+    [
+        new FunctionDeclaration
+        {
+            Name = "get_element_under_cursor",
+            Description = "Return the Windows UI Automation element under the current mouse pointer, including name, control type, parent path, and screen bounds.",
+            Parameters = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new { },
+                additionalProperties = false
+            })
+        },
+        new FunctionDeclaration
+        {
+            Name = "list_taskbar_items",
+            Description = "List visible taskbar items using UI Automation with exact names and bounds.",
+            Parameters = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new { },
+                additionalProperties = false
+            })
+        },
+        new FunctionDeclaration
+        {
+            Name = "list_desktop_icons",
+            Description = "List visible desktop icons from the desktop FolderView with exact names and bounds.",
+            Parameters = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new { },
+                additionalProperties = false
+            })
+        },
+        new FunctionDeclaration
+        {
+            Name = "get_focused_window",
+            Description = "Return the focused foreground window app name, title, and focused element details.",
+            Parameters = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new { },
+                additionalProperties = false
+            })
+        }
+    ];
 
     internal const string NoScreenReply =
         "I can't see your screen right now. Turn on screen sharing with the screen button on the overlay if you'd like me to look.";
@@ -63,6 +110,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         "ACCURACY AND RELIABILITY RULES:\n" +
         "- Never guess. If evidence is weak, partial or blurry, say you cannot see clearly.\n" +
         "- For pointer location, counting items, reading small text, or identifying icons/controls, use an available tool first.\n" +
+        "- Available desktop tools include get_element_under_cursor, list_taskbar_items, list_desktop_icons, and get_focused_window.\n" +
         "- If no tool is available for that request, say you cannot see it clearly from the screenshot instead of inventing an answer.\n" +
         "- If user intent is unclear, ask a brief clarifying question; if the target on screen is unclear, ask the user to point at it with the mouse.\n\n" +
         "WHEN SCREENSHOTS ARE PRESENT (the images show the user's primary monitor):\n" +
@@ -83,6 +131,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
     public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived;
     public event EventHandler<ConnectionAvailabilityChangedEventArgs>? ConnectionAvailabilityChanged;
     public event EventHandler<SessionReadyEventArgs>? SessionReady;
+    public event EventHandler<ToolCallsEventArgs>? ToolCallsReceived;
     public bool IsConnected => _isConnected;
 
     public async Task ConnectAsync(string apiKey, CancellationToken cancellationToken = default)
@@ -171,6 +220,28 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
 
     public Task SendAudioStreamEndAsync(CancellationToken cancellationToken = default) =>
         IsConnected ? SendJsonAsync(new AudioStreamEndMessage(), cancellationToken) : Task.CompletedTask;
+
+    public Task SendToolResponseAsync(IReadOnlyList<ToolResponsePayload> responses, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(responses);
+        if (!IsConnected || responses.Count == 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        return SendJsonAsync(new ToolResponseMessage
+        {
+            ToolResponse = new ToolResponsePayloadContent
+            {
+                FunctionResponses = responses.Select(response => new FunctionResponse
+                {
+                    Id = response.Id,
+                    Name = response.Name,
+                    Response = response.Response
+                }).ToArray()
+            }
+        }, cancellationToken);
+    }
 
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
@@ -312,6 +383,21 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         }
     }
 
+    private static ToolConfiguration[] BuildTools(bool webSearchEnabled)
+    {
+        List<ToolConfiguration> tools =
+        [
+            new ToolConfiguration { FunctionDeclarations = s_desktopFunctionDeclarations }
+        ];
+
+        if (webSearchEnabled)
+        {
+            tools.Insert(0, new ToolConfiguration { GoogleSearch = new GoogleSearchTool() });
+        }
+
+        return tools.ToArray();
+    }
+
     internal static bool IsQuotaRejection(Exception exception) =>
         exception.Message.Contains("exceeded your current quota", StringComparison.OrdinalIgnoreCase) ||
         exception.Message.Contains("RESOURCE_EXHAUSTED", StringComparison.OrdinalIgnoreCase);
@@ -338,7 +424,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                         Parts = [new InstructionPart { Text = BuildInstruction(webSearch) }]
                     },
                     SessionResumption = new SessionResumptionConfiguration { Handle = resumptionHandle },
-                    Tools = webSearch ? [new ToolConfiguration()] : null
+                    Tools = BuildTools(webSearch)
                 }
             }, cancellationToken).ConfigureAwait(false);
             StatusChanged?.Invoke(this,
@@ -452,6 +538,10 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         foreach (byte[] audio in message.AudioChunks)
         {
             AudioReceived?.Invoke(this, audio);
+        }
+        if (message.ToolCalls.Count > 0)
+        {
+            ToolCallsReceived?.Invoke(this, new ToolCallsEventArgs(message.ToolCalls));
         }
         if (message.TurnComplete && !message.Interrupted)
         {

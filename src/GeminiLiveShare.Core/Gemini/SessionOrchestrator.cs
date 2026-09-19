@@ -2,6 +2,7 @@ using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.BrowserAgent;
 using GeminiLiveShare.Core.BrowserAgent.Models;
 using GeminiLiveShare.Core.Diagnostics;
+using GeminiLiveShare.Core.Desktop;
 using GeminiLiveShare.Core.Storage;
 using GeminiLiveShare.Core.Vision;
 using System.Text.Json;
@@ -36,6 +37,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private readonly ISessionDiagnostics _diagnostics;
     private readonly IDiagnosticsDebugSettings _diagnosticsSettings;
     private readonly ConversationStateRebuilder _conversationStateRebuilder;
+    private readonly IDesktopAutomationService _desktopAutomation;
     private long _micChunksCaptured;
     private long _micChunksDropped;
     private long _framesSent;
@@ -77,11 +79,13 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         IChatHistoryRepository chatHistory,
         BrowserAgentBridge? browserAgentBridge = null,
         ISessionDiagnostics? diagnostics = null,
-        IDiagnosticsDebugSettings? diagnosticsSettings = null)
+        IDiagnosticsDebugSettings? diagnosticsSettings = null,
+        IDesktopAutomationService? desktopAutomation = null)
     {
         _diagnostics = diagnostics ?? NullSessionDiagnostics.Instance;
         _diagnosticsSettings = diagnosticsSettings ?? new DiagnosticsDebugSettings();
         _conversationStateRebuilder = new ConversationStateRebuilder(chatHistory, browserAgentBridge);
+        _desktopAutomation = desktopAutomation ?? new DesktopAutomationService();
         StatusChanged += (_, status) => _diagnostics.Log($"status: {status}");
         _audioCapture = audioCapture;
         _audioPlayback = audioPlayback;
@@ -98,6 +102,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _liveClient.TranscriptionReceived += OnTranscriptionReceived;
         _liveClient.ConnectionAvailabilityChanged += OnConnectionAvailabilityChanged;
         _liveClient.SessionReady += OnSessionReady;
+        _liveClient.ToolCallsReceived += OnToolCallsReceived;
         if (_browserAgentBridge is not null)
         {
             _browserAgentBridge.EventReceived += OnBrowserAgentEventReceived;
@@ -361,6 +366,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         _liveClient.TranscriptionReceived -= OnTranscriptionReceived;
         _liveClient.ConnectionAvailabilityChanged -= OnConnectionAvailabilityChanged;
         _liveClient.SessionReady -= OnSessionReady;
+        _liveClient.ToolCallsReceived -= OnToolCallsReceived;
         if (_browserAgentBridge is not null)
         {
             _browserAgentBridge.EventReceived -= OnBrowserAgentEventReceived;
@@ -481,6 +487,121 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             normalized.Contains("what fields are on this form", StringComparison.Ordinal) ||
             normalized.Contains("what fields are on the form", StringComparison.Ordinal) ||
             normalized.Contains("tell me what fields are on it", StringComparison.Ordinal);
+    }
+
+    private async void OnToolCallsReceived(object? sender, ToolCallsEventArgs e)
+    {
+        if (!IsRunning || !IsConnected || e.Calls.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            List<ToolResponsePayload> responses = new(e.Calls.Count);
+            foreach (ToolCallRequest call in e.Calls)
+            {
+                responses.Add(new ToolResponsePayload(call.Id, call.Name, ExecuteDesktopToolCall(call)));
+            }
+
+            await _liveClient.SendToolResponseAsync(responses, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+            StatusChanged?.Invoke(this, $"Desktop tool response sent ({responses.Count} call(s))");
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke(this, $"Unable to execute desktop tool call: {ex.Message}");
+        }
+    }
+
+    private JsonElement ExecuteDesktopToolCall(ToolCallRequest call)
+    {
+        try
+        {
+            return call.Name switch
+            {
+                "get_element_under_cursor" => JsonSerializer.SerializeToElement(BuildElementUnderCursorPayload()),
+                "list_taskbar_items" => JsonSerializer.SerializeToElement(BuildItemsPayload(_desktopAutomation.ListTaskbarItems())),
+                "list_desktop_icons" => JsonSerializer.SerializeToElement(BuildItemsPayload(_desktopAutomation.ListDesktopIcons())),
+                "get_focused_window" => JsonSerializer.SerializeToElement(BuildFocusedWindowPayload()),
+                _ => JsonSerializer.SerializeToElement(new { ok = false, error = $"Unknown desktop tool: {call.Name}" })
+            };
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.SerializeToElement(new { ok = false, error = ex.Message });
+        }
+    }
+
+    private object BuildElementUnderCursorPayload()
+    {
+        DesktopElementSnapshot? element = _desktopAutomation.GetElementUnderCursor();
+        return element is null
+            ? new { ok = true, found = false }
+            : new
+            {
+                ok = true,
+                found = true,
+                element = new
+                {
+                    name = element.Name,
+                    controlType = element.ControlType,
+                    parentPath = element.ParentPath,
+                    bounds = new
+                    {
+                        x = element.Bounds.X,
+                        y = element.Bounds.Y,
+                        width = element.Bounds.Width,
+                        height = element.Bounds.Height
+                    }
+                }
+            };
+    }
+
+    private static object BuildItemsPayload(IReadOnlyList<DesktopItemSnapshot> items) => new
+    {
+        ok = true,
+        count = items.Count,
+        items = items.Select(item => new
+        {
+            name = item.Name,
+            controlType = item.ControlType,
+            bounds = new
+            {
+                x = item.Bounds.X,
+                y = item.Bounds.Y,
+                width = item.Bounds.Width,
+                height = item.Bounds.Height
+            }
+        }).ToArray()
+    };
+
+    private object BuildFocusedWindowPayload()
+    {
+        FocusedWindowSnapshot? window = _desktopAutomation.GetFocusedWindow();
+        return window is null
+            ? new { ok = true, found = false }
+            : new
+            {
+                ok = true,
+                found = true,
+                appName = window.AppName,
+                title = window.Title,
+                focusedElement = window.FocusedElement is null
+                    ? null
+                    : new
+                    {
+                        name = window.FocusedElement.Name,
+                        controlType = window.FocusedElement.ControlType,
+                        parentPath = window.FocusedElement.ParentPath,
+                        bounds = new
+                        {
+                            x = window.FocusedElement.Bounds.X,
+                            y = window.FocusedElement.Bounds.Y,
+                            width = window.FocusedElement.Bounds.Width,
+                            height = window.FocusedElement.Bounds.Height
+                        }
+                    }
+            };
     }
 
     private void OnSessionReady(object? sender, SessionReadyEventArgs e)

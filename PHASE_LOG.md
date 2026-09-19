@@ -7,6 +7,37 @@ implementation, files changed, verification performed, and manual test steps.
 > [`PROJECT_STATE.md`](PROJECT_STATE.md). Open this file when you need the measurements and
 > reasoning behind a past fix.
 
+## Phase 7d - Live desktop automation tools wired into Gemini session
+
+- **Date:** 2026-09-19
+- **Status:** Implemented (first end-to-end wiring); build and tests pass.
+- **Goal:** Replace vision guessing for pointer/location/counting questions with exact Windows UI Automation data.
+- **Implementation:**
+  - Added IDesktopAutomationService + DesktopAutomationService as the Windows/UIA backend for:
+    - get_element_under_cursor
+    - list_taskbar_items
+    - list_desktop_icons
+    - get_focused_window
+  - Extended Live setup tool declarations to expose the above functions to Gemini in every session.
+  - Extended Live message parsing to read server 	oolCall.functionCalls payloads.
+  - Added client-side tool response transport (	oolResponse.functionResponses) so tool outputs return to Gemini.
+  - Wired SessionOrchestrator to execute incoming desktop tool calls and respond with structured JSON (name/type/path/bounds, counts, focused window metadata).
+  - Updated system instruction to explicitly list available desktop tools.
+  - Expanded protocol tests to verify tool-call parsing and setup tool serialization with/without web search.
+- **Files changed:**
+  - src/GeminiLiveShare.Core/Desktop/IDesktopAutomationService.cs
+  - src/GeminiLiveShare.Core/Desktop/DesktopAutomationService.cs
+  - src/GeminiLiveShare.Core/Gemini/GeminiLiveClient.cs
+  - src/GeminiLiveShare.Core/Gemini/IGeminiLiveClient.cs
+  - src/GeminiLiveShare.Core/Gemini/ToolCallsEventArgs.cs (new)
+  - src/GeminiLiveShare.Core/Gemini/Models/SetupMessage.cs
+  - src/GeminiLiveShare.Core/Gemini/Models/ServerMessageParser.cs
+  - src/GeminiLiveShare.Core/Gemini/Models/ToolResponseMessage.cs (new)
+  - src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs
+  - src/GeminiLiveShare.Tests/Program.cs
+- **Verification:**
+  - dotnet build GeminiLiveShare.sln (pass)
+  - dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj (pass)
 ## Phase 7c - system instruction hardening (never guess + tool-first + date/model context)
 
 - **Date:** 2026-09-19
@@ -300,6 +331,7 @@ implementation, files changed, verification performed, and manual test steps.
   5. Repeat steps 3–4 with headphones to confirm there is no regression.
   6. Mute/unmute the mic mid-session and confirm the status message and capture resume.
 - **If interruptions still occur:** a second layer is available but not yet applied. Lower Gemini's server VAD sensitivity (`realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity = START_SENSITIVITY_LOW`) in `SetupMessage`. It was held back because it also makes genuine barge-in less sensitive.
+
 
 
 

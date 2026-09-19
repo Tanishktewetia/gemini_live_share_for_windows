@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace GeminiLiveShare.Core.Gemini.Models;
@@ -38,10 +39,27 @@ public sealed class SetupConfiguration
 public sealed class ToolConfiguration
 {
     [JsonPropertyName("googleSearch")]
-    public GoogleSearchTool GoogleSearch { get; init; } = new();
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GoogleSearchTool? GoogleSearch { get; init; }
+
+    [JsonPropertyName("functionDeclarations")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FunctionDeclaration[]? FunctionDeclarations { get; init; }
 }
 
 public sealed class GoogleSearchTool;
+
+public sealed class FunctionDeclaration
+{
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("description")]
+    public required string Description { get; init; }
+
+    [JsonPropertyName("parameters")]
+    public required JsonElement Parameters { get; init; }
+}
 
 public sealed class AudioTranscriptionConfiguration;
 

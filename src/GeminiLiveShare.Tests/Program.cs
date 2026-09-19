@@ -286,20 +286,65 @@ static void ValidateWebSearchSetup()
         {
             Model = "models/test",
             GenerationConfig = new AudioGenerationConfiguration(),
-            Tools = [new ToolConfiguration()]
+            Tools =
+            [
+                new ToolConfiguration { GoogleSearch = new GoogleSearchTool() },
+                new ToolConfiguration
+                {
+                    FunctionDeclarations =
+                    [
+                        new FunctionDeclaration
+                        {
+                            Name = "get_element_under_cursor",
+                            Description = "returns element under cursor",
+                            Parameters = JsonSerializer.SerializeToElement(new { type = "object" })
+                        }
+                    ]
+                }
+            ]
         }
     };
     using (JsonDocument json = JsonDocument.Parse(JsonSerializer.Serialize(withSearch)))
     {
-        Require(json.RootElement.GetProperty("setup").GetProperty("tools")[0].TryGetProperty("googleSearch", out _),
+        JsonElement tools = json.RootElement.GetProperty("setup").GetProperty("tools");
+        Require(tools.EnumerateArray().Any(tool => tool.TryGetProperty("googleSearch", out _)),
             "Google Search was not serialized as a Live API tool");
+        Require(tools.EnumerateArray().Any(tool =>
+                tool.TryGetProperty("functionDeclarations", out JsonElement declarations) &&
+                declarations.EnumerateArray().Any(declaration => declaration.GetProperty("name").GetString() == "get_element_under_cursor")),
+            "desktop function declarations were not serialized");
     }
 
-    SetupMessage withoutSearch = new() { Setup = new SetupConfiguration { Model = "models/test", GenerationConfig = new AudioGenerationConfiguration() } };
+    SetupMessage withoutSearch = new()
+    {
+        Setup = new SetupConfiguration
+        {
+            Model = "models/test",
+            GenerationConfig = new AudioGenerationConfiguration(),
+            Tools =
+            [
+                new ToolConfiguration
+                {
+                    FunctionDeclarations =
+                    [
+                        new FunctionDeclaration
+                        {
+                            Name = "list_desktop_icons",
+                            Description = "lists desktop icons",
+                            Parameters = JsonSerializer.SerializeToElement(new { type = "object" })
+                        }
+                    ]
+                }
+            ]
+        }
+    };
     using (JsonDocument json = JsonDocument.Parse(JsonSerializer.Serialize(withoutSearch)))
     {
-        Require(!json.RootElement.GetProperty("setup").TryGetProperty("tools", out _),
-            "tools were sent although web search is unavailable");
+        JsonElement tools = json.RootElement.GetProperty("setup").GetProperty("tools");
+        Require(!tools.EnumerateArray().Any(tool => tool.TryGetProperty("googleSearch", out _)),
+            "googleSearch tool was sent when search should be unavailable");
+        Require(tools.EnumerateArray().Any(tool => tool.TryGetProperty("functionDeclarations", out _)),
+            "desktop function tools were not serialized without web search");
     }
 
     // Measured close reason for a key without Google Search quota in Live sessions.
@@ -388,6 +433,11 @@ static void ValidateLiveProtocol()
         {
           "sessionResumptionUpdate": { "resumable": true, "newHandle": "handle-2" },
           "goAway": { "timeLeft": "10s" },
+          "toolCall": {
+            "functionCalls": [
+              { "id": "tool-1", "name": "list_desktop_icons", "args": { "scope": "visible" } }
+            ]
+          },
           "serverContent": {
             "interrupted": true,
             "turnComplete": true,
@@ -408,6 +458,11 @@ static void ValidateLiveProtocol()
         "transcription text was not parsed");
     Require(parsed.AudioChunks.Count == 1 && parsed.AudioChunks[0].SequenceEqual(new byte[] { 1, 2, 3 }),
         "audio payload was not parsed");
+    Require(parsed.ToolCalls.Count == 1 &&
+            parsed.ToolCalls[0].Id == "tool-1" &&
+            parsed.ToolCalls[0].Name == "list_desktop_icons" &&
+            parsed.ToolCalls[0].Args.GetProperty("scope").GetString() == "visible",
+        "tool call payload was not parsed");
 }
 
 static void ValidateOutputTranscriptionAccumulation()
@@ -724,6 +779,7 @@ file sealed class FakeLiveClient : IGeminiLiveClient
     public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived { add { } remove { } }
     public event EventHandler<ConnectionAvailabilityChangedEventArgs>? ConnectionAvailabilityChanged;
     public event EventHandler<SessionReadyEventArgs>? SessionReady;
+    public event EventHandler<ToolCallsEventArgs>? ToolCallsReceived;
     public bool IsConnected { get; private set; }
     public List<string> TextInputs { get; } = [];
 
@@ -748,6 +804,7 @@ file sealed class FakeLiveClient : IGeminiLiveClient
         return Task.CompletedTask;
     }
     public Task SendAudioStreamEndAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public Task SendToolResponseAsync(IReadOnlyList<ToolResponsePayload> responses, CancellationToken cancellationToken = default) => Task.CompletedTask;
     public Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
         IsConnected = false;

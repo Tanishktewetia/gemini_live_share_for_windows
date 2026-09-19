@@ -1,4 +1,5 @@
 using System.Text.Json;
+using GeminiLiveShare.Core.Gemini;
 
 namespace GeminiLiveShare.Core.Gemini.Models;
 
@@ -13,7 +14,8 @@ internal sealed record ParsedServerMessage(
     bool GoAway,
     string? GoAwayTimeLeft,
     bool? Resumable,
-    string? NewHandle);
+    string? NewHandle,
+    IReadOnlyList<ToolCallRequest> ToolCalls);
 
 internal static class ServerMessageParser
 {
@@ -41,6 +43,28 @@ internal static class ServerMessageParser
             ReadAudio(serverContent, audioChunks);
         }
 
+
+        List<ToolCallRequest> toolCalls = [];
+        if (root.TryGetProperty("toolCall", out JsonElement toolCall) &&
+            toolCall.TryGetProperty("functionCalls", out JsonElement functionCalls) &&
+            functionCalls.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement functionCall in functionCalls.EnumerateArray())
+            {
+                string? id = functionCall.TryGetProperty("id", out JsonElement idElement) ? idElement.GetString() : null;
+                string? name = functionCall.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() : null;
+                if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                JsonElement args = functionCall.TryGetProperty("args", out JsonElement argsElement)
+                    ? argsElement.Clone()
+                    : JsonSerializer.SerializeToElement(new { });
+                toolCalls.Add(new ToolCallRequest(id, name, args));
+            }
+        }
+
         bool goAway = root.TryGetProperty("goAway", out JsonElement goAwayElement);
         string? timeLeft = goAway && goAwayElement.TryGetProperty("timeLeft", out JsonElement timeLeftElement)
             ? timeLeftElement.GetString()
@@ -63,7 +87,7 @@ internal static class ServerMessageParser
 
         return new ParsedServerMessage(
             root.TryGetProperty("setupComplete", out _), error, audioChunks, interrupted,
-            inputTranscription, outputTranscription, turnComplete, goAway, timeLeft, resumable, newHandle);
+            inputTranscription, outputTranscription, turnComplete, goAway, timeLeft, resumable, newHandle, toolCalls);
     }
 
     private static string? GetTranscription(JsonElement serverContent, string propertyName)
