@@ -1,7 +1,7 @@
 # PROJECT STATE — Gemini Live Share (Windows)
 
 **Read this file first. It is the single source of truth for what exists today.**
-Last updated: 2026-09-19 · Branch: `main` · Latest commit: `pending next corrective commit`
+Last updated: 2026-09-19 · Branch: `main` · Latest commit: corrective Phase 7 follow-up (see `git log -1`)
 
 Everything below reflects the code as it is now. The other docs are either plans
 (what we intended) or history (what we fixed). Read them only when this file
@@ -233,3 +233,4 @@ steps for this reason.
 5. Web search failing is **not** a missing-`googleSearch`-tool bug. The tool is sent
    and refused for quota.
 6. There is no test framework dependency. Do not add xUnit or NUnit.
+
