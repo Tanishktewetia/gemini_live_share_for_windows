@@ -321,7 +321,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                 string connectedLabel = isReconnect ? "Reconnected" : "Connected";
                 StatusChanged?.Invoke(this, connectedLabel);
                 StatusChanged?.Invoke(this,
-                    $"{connectedLabel}: session {(resumedSession ? "resumed" : "fresh")}, web search {(setup.WebSearchEnabled ? "ON" : "OFF")}");
+                    $"{connectedLabel}: session {(resumedSession ? "resumed" : "fresh")}, web search {(setup.WebSearchEnabled ? "ON" : "OFF")}, desktop tools {(setup.DesktopToolsEnabled ? "ON" : "OFF")}");
                 SetConnectionAvailability(true);
                 SessionReady?.Invoke(this, new SessionReadyEventArgs(
                     isReconnect,
@@ -370,39 +370,72 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
 
     private async Task<SocketSetupResult> ConnectSocketAsync(string apiKey, string? resumptionHandle, CancellationToken cancellationToken)
     {
-        bool webSearch = !s_webSearchUnavailable;
-        try
+        List<(bool WebSearch, bool DesktopTools)> attempts = [];
+        if (!s_webSearchUnavailable)
         {
-            return await ConnectSocketAsync(apiKey, resumptionHandle, webSearch, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (webSearch && IsQuotaRejection(ex) && !cancellationToken.IsCancellationRequested)
-        {
-            s_webSearchUnavailable = true;
-            StatusChanged?.Invoke(this, "Web search is not available for this API key (no quota); continuing without it");
-            return await ConnectSocketAsync(apiKey, resumptionHandle, false, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private static ToolConfiguration[] BuildTools(bool webSearchEnabled)
-    {
-        List<ToolConfiguration> tools =
-        [
-            new ToolConfiguration { FunctionDeclarations = s_desktopFunctionDeclarations }
-        ];
-
-        if (webSearchEnabled)
-        {
-            tools.Insert(0, new ToolConfiguration { GoogleSearch = new GoogleSearchTool() });
+            attempts.Add((WebSearch: true, DesktopTools: true));
         }
 
-        return tools.ToArray();
+        attempts.Add((WebSearch: false, DesktopTools: true));
+        attempts.Add((WebSearch: false, DesktopTools: false));
+
+        Exception? lastError = null;
+        foreach ((bool webSearch, bool desktopTools) in attempts.Distinct())
+        {
+            try
+            {
+                return await ConnectSocketAsync(apiKey, resumptionHandle, webSearch, desktopTools, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                lastError = ex;
+                if (webSearch && IsQuotaRejection(ex))
+                {
+                    s_webSearchUnavailable = true;
+                    StatusChanged?.Invoke(this, "Web search is not available for this API key (no quota); continuing without it");
+                    continue;
+                }
+
+                if (desktopTools)
+                {
+                    StatusChanged?.Invoke(this, $"Live desktop tools setup failed ({GetSafeConnectionError(ex)}); retrying with reduced tool set");
+                    continue;
+                }
+
+                throw;
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("The Gemini Live API connection failed.");
     }
 
     internal static bool IsQuotaRejection(Exception exception) =>
         exception.Message.Contains("exceeded your current quota", StringComparison.OrdinalIgnoreCase) ||
         exception.Message.Contains("RESOURCE_EXHAUSTED", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<SocketSetupResult> ConnectSocketAsync(string apiKey, string? resumptionHandle, bool webSearch, CancellationToken cancellationToken)
+    private static ToolConfiguration[]? BuildTools(bool webSearchEnabled, bool desktopToolsEnabled)
+    {
+        List<ToolConfiguration> tools = [];
+
+        if (webSearchEnabled)
+        {
+            tools.Add(new ToolConfiguration { GoogleSearch = new GoogleSearchTool() });
+        }
+
+        if (desktopToolsEnabled)
+        {
+            tools.Add(new ToolConfiguration { FunctionDeclarations = s_desktopFunctionDeclarations });
+        }
+
+        return tools.Count == 0 ? null : tools.ToArray();
+    }
+
+    private async Task<SocketSetupResult> ConnectSocketAsync(
+        string apiKey,
+        string? resumptionHandle,
+        bool webSearch,
+        bool desktopTools,
+        CancellationToken cancellationToken)
     {
         ClientWebSocket socket = new();
         try
@@ -424,18 +457,18 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                         Parts = [new InstructionPart { Text = BuildInstruction(webSearch) }]
                     },
                     SessionResumption = new SessionResumptionConfiguration { Handle = resumptionHandle },
-                    Tools = BuildTools(webSearch)
+                    Tools = BuildTools(webSearch, desktopTools)
                 }
             }, cancellationToken).ConfigureAwait(false);
             StatusChanged?.Invoke(this,
-                $"Gemini Live setup sent (resumption handle {(string.IsNullOrWhiteSpace(resumptionHandle) ? "none" : "present")}, web search {(webSearch ? "ON" : "OFF")}); awaiting server confirmation");
+                $"Gemini Live setup sent (resumption handle {(string.IsNullOrWhiteSpace(resumptionHandle) ? "none" : "present")}, web search {(webSearch ? "ON" : "OFF")}, desktop tools {(desktopTools ? "ON" : "OFF")}); awaiting server confirmation");
             Task receiveSetup = ReceiveUntilSetupAsync(socket, setupCompleted, cancellationToken);
             // A server close during setup (e.g. a quota rejection) fails receiveSetup without completing setupCompleted;
             // surface that real error immediately instead of waiting for the 15 s timeout.
             await Task.WhenAny(setupCompleted.Task, receiveSetup).WaitAsync(SetupTimeout, cancellationToken).ConfigureAwait(false);
             await receiveSetup.ConfigureAwait(false);
             await setupCompleted.Task.ConfigureAwait(false);
-            return new SocketSetupResult(socket, webSearch);
+            return new SocketSetupResult(socket, webSearch, desktopTools);
         }
         catch
         {
@@ -616,7 +649,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         }
     }
 
-    private sealed record SocketSetupResult(ClientWebSocket Socket, bool WebSearchEnabled);
+    private sealed record SocketSetupResult(ClientWebSocket Socket, bool WebSearchEnabled, bool DesktopToolsEnabled);
 
     private static TaskCompletionSource NewCompletionSource() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 

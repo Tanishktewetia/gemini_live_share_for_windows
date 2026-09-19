@@ -7,6 +7,23 @@ implementation, files changed, verification performed, and manual test steps.
 > [`PROJECT_STATE.md`](PROJECT_STATE.md). Open this file when you need the measurements and
 > reasoning behind a past fix.
 
+## Phase 7d hotfix - start fallback when Live tool setup is rejected
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and tests pass.
+- **Issue:** After 7d tool wiring, some sessions failed during setup and never reached conversation start (connected briefly then disconnected).
+- **Fix:**
+  - Added setup fallback chain in GeminiLiveClient:
+    1. web search + desktop tools
+    2. desktop tools only
+    3. no tools
+  - If any richer tool setup is rejected by server, client now retries with a reduced set instead of failing start.
+  - Status output now includes desktop-tools ON/OFF and logs fallback attempts.
+- **Files changed:**
+  - src/GeminiLiveShare.Core/Gemini/GeminiLiveClient.cs
+- **Verification:**
+  - dotnet build GeminiLiveShare.sln (pass)
+  - dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj (pass)
 ## Phase 7d - Live desktop automation tools wired into Gemini session
 
 - **Date:** 2026-09-19
@@ -331,6 +348,7 @@ implementation, files changed, verification performed, and manual test steps.
   5. Repeat steps 3–4 with headphones to confirm there is no regression.
   6. Mute/unmute the mic mid-session and confirm the status message and capture resume.
 - **If interruptions still occur:** a second layer is available but not yet applied. Lower Gemini's server VAD sensitivity (`realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity = START_SENSITIVITY_LOW`) in `SetupMessage`. It was held back because it also makes genuine barge-in less sensitive.
+
 
 
 
