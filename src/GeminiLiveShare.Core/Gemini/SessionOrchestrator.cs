@@ -84,11 +84,17 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private CancellationTokenSource? _assistantWatchdogCancellation;
     private string? _pendingAudibleReplyUserPrompt;
     private bool _assistantAudioReceivedForPendingPrompt;
+    private bool _assistantTurnAwaitingToolResponse;
+    private int _toolCallsInFlight;
     private DateTimeOffset _lastSilentRecoveryUtc = DateTimeOffset.MinValue;
     private static readonly Regex NumberRegex = new(@"\b(\d+)\b", RegexOptions.Compiled);
     private static readonly Regex ZoomCellRegex = new(@"^[A-D](?:[1-4])$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly TimeSpan RecentCountIntentLifetime = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan AssistantAudioWatchdogDelay = TimeSpan.FromSeconds(4);
+    // UI Automation, zoom and regular-model search can each take longer than the
+    // normal audio start window. Tool calls are not silent turns, so only start this
+    // longer watchdog after the tool response has been sent.
+    private static readonly TimeSpan AssistantAudioAfterToolWatchdogDelay = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan AssistantSilentRecoveryCooldown = TimeSpan.FromSeconds(12);
 
     internal const string ScreenShareOnNotice =
@@ -887,11 +893,11 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         }
     }
 
-    private async Task WatchForMissingAssistantAudioAsync(CancellationTokenSource watchdog)
+    private async Task WatchForMissingAssistantAudioAsync(CancellationTokenSource watchdog, TimeSpan? delay = null)
     {
         try
         {
-            await Task.Delay(AssistantAudioWatchdogDelay, watchdog.Token).ConfigureAwait(false);
+            await Task.Delay(delay ?? AssistantAudioWatchdogDelay, watchdog.Token).ConfigureAwait(false);
             await RecoverSilentAssistantTurnIfNeededAsync("no-audio-watchdog").ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -904,7 +910,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         string? pendingPrompt;
         lock (_assistantWatchdogLock)
         {
-            if (_assistantAudioReceivedForPendingPrompt || !IsRunning || !IsConnected)
+            if (_assistantAudioReceivedForPendingPrompt || _assistantTurnAwaitingToolResponse || _toolCallsInFlight > 0 || !IsRunning || !IsConnected)
             {
                 return;
             }
@@ -1010,12 +1016,14 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         try
         {
+            PauseAssistantAudioWatchdogForToolCalls(e.Calls.Count);
             _diagnostics.Log($"tool calls received: {string.Join(", ", e.Calls.Select(call => call.Name))}");
             List<ToolResponsePayload> responses = new(e.Calls.Count);
             foreach (ToolCallRequest call in e.Calls)
             {
                 JsonElement response = await ExecuteToolCallAsync(call, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
                 responses.Add(new ToolResponsePayload(call.Id, call.Name, response));
+                LogToolResponse(call.Name, response);
             }
 
             await _liveClient.SendToolResponseAsync(responses, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
@@ -1024,6 +1032,10 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         catch (Exception ex)
         {
             StatusChanged?.Invoke(this, $"Unable to execute tool call: {ex.Message}");
+        }
+        finally
+        {
+            ResumeAssistantAudioWatchdogAfterToolCalls(e.Calls.Count);
         }
     }
 
@@ -1056,12 +1068,12 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
     private async Task<JsonElement> ExecuteHighlightElementToolCallAsync(ToolCallRequest call, CancellationToken cancellationToken)
     {
-        if (!TryParseHighlightRequest(call.Args, out string name, out string? role, out string parseError))
+        if (!TryParseHighlightRequest(call.Args, out string name, out string? role, out string? location, out string parseError))
         {
             return JsonSerializer.SerializeToElement(new { ok = false, error = parseError });
         }
 
-        IReadOnlyList<DesktopItemSnapshot> matches = _desktopAutomation.FindElementsByNameRole(name, role);
+        IReadOnlyList<DesktopItemSnapshot> matches = _desktopAutomation.FindElementsByNameRole(name, role, location);
         string source = "ui_automation";
 
         if (matches.Count == 0)
@@ -1081,13 +1093,25 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             TimeSpan.FromSeconds(8),
             cancellationToken).ConfigureAwait(false);
 
+        if (!_highlightOverlay.IsVisible)
+        {
+            return JsonSerializer.SerializeToElement(new
+            {
+                ok = false,
+                found = true,
+                error = "The target was found, but the highlight overlay did not become visible. Do not claim that it was highlighted."
+            });
+        }
+
         return JsonSerializer.SerializeToElement(new
         {
             ok = true,
             found = true,
             source,
             ambiguous = matches.Count > 1,
+            location = string.IsNullOrWhiteSpace(location) ? null : location,
             matchCount = matches.Count,
+            overlayVisible = _highlightOverlay.IsVisible,
             selected = new
             {
                 name = selected.Name,
@@ -1148,13 +1172,16 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         }
     }
 
-    private static bool TryParseHighlightRequest(JsonElement args, out string name, out string? role, out string error)
+    private static bool TryParseHighlightRequest(JsonElement args, out string name, out string? role, out string? location, out string error)
     {
         name = args.TryGetProperty("name", out JsonElement nameElement)
             ? nameElement.GetString()?.Trim() ?? string.Empty
             : string.Empty;
         role = args.TryGetProperty("role", out JsonElement roleElement)
             ? roleElement.GetString()?.Trim()
+            : null;
+        location = args.TryGetProperty("location", out JsonElement locationElement)
+            ? locationElement.GetString()?.Trim()
             : null;
         error = string.Empty;
         if (string.IsNullOrWhiteSpace(name))
@@ -1165,6 +1192,99 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         return true;
     }
+
+    private void PauseAssistantAudioWatchdogForToolCalls(int callCount)
+    {
+        lock (_assistantWatchdogLock)
+        {
+            _toolCallsInFlight += callCount;
+            _assistantTurnAwaitingToolResponse = true;
+            _assistantWatchdogCancellation?.Cancel();
+            _assistantWatchdogCancellation?.Dispose();
+            _assistantWatchdogCancellation = null;
+        }
+
+        _diagnostics.Log($"audio watchdog: paused for {callCount} tool call(s)");
+    }
+
+    private void ResumeAssistantAudioWatchdogAfterToolCalls(int callCount)
+    {
+        CancellationTokenSource? watchdog = null;
+        lock (_assistantWatchdogLock)
+        {
+            _toolCallsInFlight = Math.Max(0, _toolCallsInFlight - callCount);
+            if (_toolCallsInFlight != 0)
+            {
+                return;
+            }
+
+            _assistantTurnAwaitingToolResponse = false;
+            if (IsRunning && IsConnected &&
+                !_assistantAudioReceivedForPendingPrompt &&
+                !string.IsNullOrWhiteSpace(_pendingAudibleReplyUserPrompt))
+            {
+                watchdog = new CancellationTokenSource();
+                _assistantWatchdogCancellation?.Cancel();
+                _assistantWatchdogCancellation?.Dispose();
+                _assistantWatchdogCancellation = watchdog;
+            }
+        }
+
+        if (watchdog is not null)
+        {
+            _diagnostics.Log($"audio watchdog: waiting {AssistantAudioAfterToolWatchdogDelay.TotalSeconds:0}s after tool response");
+            _ = WatchForMissingAssistantAudioAsync(watchdog, AssistantAudioAfterToolWatchdogDelay);
+        }
+    }
+
+    private void LogToolResponse(string toolName, JsonElement response)
+    {
+        bool ok = response.TryGetProperty("ok", out JsonElement okElement) && okElement.ValueKind == JsonValueKind.True;
+        string detail = response.TryGetProperty("error", out JsonElement error)
+            ? TrimDiagnosticValue(error.GetString())
+            : toolName switch
+            {
+                "highlight_element" => BuildHighlightDiagnostic(response),
+                "web_search" => BuildSearchDiagnostic(response),
+                "zoom_region" => BuildZoomDiagnostic(response),
+                _ => string.Empty
+            };
+        _diagnostics.Log($"tool response: name={toolName}, ok={(ok ? "yes" : "no")}{(string.IsNullOrWhiteSpace(detail) ? string.Empty : ", " + detail)}");
+    }
+
+    private static string BuildHighlightDiagnostic(JsonElement response)
+    {
+        int matchCount = response.TryGetProperty("matchCount", out JsonElement count) && count.TryGetInt32(out int value) ? value : 0;
+        if (!response.TryGetProperty("selected", out JsonElement selected) ||
+            !selected.TryGetProperty("bounds", out JsonElement bounds))
+        {
+            return $"matches={matchCount}";
+        }
+
+        return $"matches={matchCount}, bounds={FormatBounds(bounds)}";
+    }
+
+    private static string BuildSearchDiagnostic(JsonElement response) =>
+        $"reliable={(response.TryGetProperty("reliable", out JsonElement reliable) && reliable.ValueKind == JsonValueKind.True ? "yes" : "no")}, sources={(response.TryGetProperty("sources", out JsonElement sources) && sources.ValueKind == JsonValueKind.Array ? sources.GetArrayLength() : 0)}";
+
+    private static string BuildZoomDiagnostic(JsonElement response) =>
+        response.TryGetProperty("bounds", out JsonElement bounds)
+            ? $"bounds={FormatBounds(bounds)}"
+            : string.Empty;
+
+    private static string FormatBounds(JsonElement bounds)
+    {
+        if (bounds.TryGetProperty("x", out JsonElement x) && bounds.TryGetProperty("y", out JsonElement y) &&
+            bounds.TryGetProperty("width", out JsonElement width) && bounds.TryGetProperty("height", out JsonElement height))
+        {
+            return $"{x.GetInt32()}:{y.GetInt32()}:{width.GetInt32()}x{height.GetInt32()}";
+        }
+
+        return "unknown";
+    }
+
+    private static string TrimDiagnosticValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "error=unknown" : $"error={(value.Length > 160 ? value[..160] : value)}";
 
     private async Task ClearHighlightAsync()
     {

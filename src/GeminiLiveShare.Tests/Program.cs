@@ -34,6 +34,7 @@ await ValidateUnreliableCountGuardAsync();
 await ValidateZoomRegionToolAsync();
 await ValidateHighlightElementToolAsync();
 await ValidateWebSearchToolAsync();
+await ValidateToolCallDoesNotTriggerSilentRecoveryAsync();
 await ValidateFreshFrameOnUserSpeechAsync();
 ValidateGlobalHotkeySettings();
 ValidatePlaybackQueueIsLossless();
@@ -961,6 +962,38 @@ static async Task ValidateWebSearchToolAsync()
     await orchestrator.StopAsync();
 }
 
+static async Task ValidateToolCallDoesNotTriggerSilentRecoveryAsync()
+{
+    FakeLiveClient client = new();
+    FakeWebSearchService search = new(TimeSpan.FromSeconds(1));
+    await using SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(),
+        new FakeAudioPlayback(),
+        client,
+        new FakeScreenCapture(),
+        new FakeImageProcessing(),
+        new FakeChatHistory(),
+        webSearchService: search);
+
+    await orchestrator.StartAsync("test-key");
+    client.EmitTranscription("user", "search for the current weather");
+    client.EmitToolCalls([
+        new ToolCallRequest(
+            "slow-search-1",
+            "web_search",
+            JsonSerializer.SerializeToElement(new { query = "current weather" }))
+    ]);
+
+    await WaitUntilAsync(() => client.ToolResponses.Count > 0,
+        "slow web_search tool response was not sent");
+    // The old watchdog fired four seconds after user transcription even when a tool was still/just finished running.
+    // Keep the assertion past that boundary.
+    await Task.Delay(TimeSpan.FromSeconds(4));
+    Require(client.ConnectCalls == 1 && client.DisconnectCalls == 0,
+        "a tool call was incorrectly treated as a silent turn and reconnected the session");
+    await orchestrator.StopAsync();
+}
+
 static async Task ValidateFreshFrameOnUserSpeechAsync()
 {
     FakeLiveClient client = new();
@@ -1059,6 +1092,8 @@ file sealed class FakeLiveClient : IGeminiLiveClient
     public event EventHandler<SessionReadyEventArgs>? SessionReady;
     public event EventHandler<ToolCallsEventArgs>? ToolCallsReceived;
     public bool IsConnected { get; private set; }
+    public int ConnectCalls { get; private set; }
+    public int DisconnectCalls { get; private set; }
     public List<string> TextInputs { get; } = [];
     public List<ToolResponsePayload> ToolResponses { get; } = [];
 
@@ -1070,6 +1105,7 @@ file sealed class FakeLiveClient : IGeminiLiveClient
 
     public Task ConnectAsync(string apiKey, CancellationToken cancellationToken = default)
     {
+        ConnectCalls++;
         IsConnected = true;
         ConnectionAvailabilityChanged?.Invoke(this, new ConnectionAvailabilityChangedEventArgs(true));
         return Task.CompletedTask;
@@ -1096,6 +1132,7 @@ file sealed class FakeLiveClient : IGeminiLiveClient
     }
     public Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
+        DisconnectCalls++;
         IsConnected = false;
         return Task.CompletedTask;
     }
@@ -1207,14 +1244,16 @@ file sealed class RecordingHighlightOverlay : IHighlightOverlayService
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
-file sealed class FakeWebSearchService : IWebSearchService
+file sealed class FakeWebSearchService(TimeSpan? delay = null) : IWebSearchService
 {
+    private readonly TimeSpan _delay = delay ?? TimeSpan.Zero;
     public string? LastQuery { get; private set; }
 
-    public Task<WebSearchResult> SearchAsync(string apiKey, string query, CancellationToken cancellationToken = default)
+    public async Task<WebSearchResult> SearchAsync(string apiKey, string query, CancellationToken cancellationToken = default)
     {
         LastQuery = query;
-        return Task.FromResult(new WebSearchResult("A sourced test result.", ["Example source"], true));
+        await Task.Delay(_delay, cancellationToken);
+        return new WebSearchResult("A sourced test result.", ["Example source"], true);
     }
 }
 
@@ -1301,7 +1340,7 @@ file sealed class FakeDesktopAutomationService(
             .Select(index => new DesktopItemSnapshot($"Icon {index}", "ControlType.ListItem", new System.Drawing.Rectangle((index % 10) * 10, (index / 10) * 10, 10, 10)))
             .ToArray();
 
-    public IReadOnlyList<DesktopItemSnapshot> FindElementsByNameRole(string name, string? role) =>
+    public IReadOnlyList<DesktopItemSnapshot> FindElementsByNameRole(string name, string? role, string? location = null) =>
         name.Contains("Codex", StringComparison.OrdinalIgnoreCase)
             ? [new DesktopItemSnapshot("Codex", "ControlType.Button", new System.Drawing.Rectangle(100, 100, 80, 30))]
             : [];

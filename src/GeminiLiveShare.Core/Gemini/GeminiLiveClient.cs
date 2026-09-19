@@ -67,14 +67,15 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         new FunctionDeclaration
         {
             Name = "highlight_element",
-            Description = "Find a visible enabled control by its accessible name and optional role, then draw a temporary click-through highlight around it. Never click it.",
+            Description = "Find a visible enabled control by its accessible name and optional role/location, then draw a temporary click-through highlight around it. Never click it.",
             Parameters = JsonSerializer.SerializeToElement(new
             {
                 type = "object",
                 properties = new
                 {
                     name = new { type = "string" },
-                    role = new { type = "string" }
+                    role = new { type = "string" },
+                    location = new { type = "string", description = "Optional hint such as left_sidebar, quick_access, desktop, or taskbar." }
                 },
                 required = new[] { "name" },
             })
@@ -164,7 +165,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         "- Never guess. If evidence is weak, partial or blurry, say you cannot see clearly.\n" +
         "- For pointer location, counting items, reading small text, or identifying icons/controls, use an available tool first.\n" +
         "- Available desktop tools include get_element_under_cursor, list_taskbar_items, list_desktop_icons, get_focused_window, zoom_region, and highlight_element.\n" +
-        "- When the user asks you to highlight or show where to click, call highlight_element first. Never claim a visible highlight unless the tool succeeds.\n" +
+        "- When the user asks you to highlight or show where to click, call highlight_element first. If the user names a place such as the left sidebar, Quick access, desktop or taskbar, pass that as the location hint. Never claim a visible highlight unless the tool succeeds.\n" +
         "- When current web information is needed and Live Google Search is unavailable, call web_search. Never claim a search happened without a successful tool result.\n" +
         "- For details UI Automation cannot access (tiny text in images, scanned PDFs), call zoom_region and specify either grid cells A1-D4 or a box.\n" +
         "- If no tool is available for that request, say you cannot see it clearly from the screenshot instead of inventing an answer.\n" +

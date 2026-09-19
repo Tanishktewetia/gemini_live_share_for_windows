@@ -1,7 +1,7 @@
 # PROJECT STATE — Gemini Live Share (Windows)
 
 **Read this file first. It is the single source of truth for what exists today.**
-Last updated: 2026-09-19 · Branch: `main` · Latest commit: `d55768e`
+Last updated: 2026-09-19 · Branch: `main` · Latest commit: `pending next corrective commit`
 
 Everything below reflects the code as it is now. The other docs are either plans
 (what we intended) or history (what we fixed). Read them only when this file
@@ -102,9 +102,9 @@ session log. See `PHASE_LOG.md` §1 for the numbers.
 | Chat history, titles, rename | Working. SQLite, AI-generated titles, backfill at startup |
 | Overlay UI, tray, global hotkey | Working (Phase 5 complete) |
 | Reconnect with session resumption | Working |
-| Phase 7e zoom_region + fresh-frame forcing | Corrected in code; real-app verification pending after restart |
-| Phase 7f web search | Corrected in code; Live/app fallback behavior requires real-key verification |
-| Phase 7g element highlighting | Corrected in code through foreground-window UI Automation plus click-through overlay; real-app verification pending |
+| Phase 7e zoom_region + fresh-frame forcing | Corrective model/watchdog fixes in code; real-app verification pending after restart |
+| Phase 7f web search | Live/app fallback wiring works; regular-call model fallback corrected; real-key verification pending |
+| Phase 7g element highlighting | Foreground/root UI Automation, location hints and overlay visibility checks implemented; real-app verification pending |
 | Diagnostics log | Working: `%LOCALAPPDATA%\GeminiLiveShare\logs\session-yyyyMMdd.log` |
 | Browser agent 6a–6e | Working: extension ⇄ proxy ⇄ app pipe, `get_active_page`, `get_form_fields`, page context injected into the conversation. **Read-only** |
 | Google Search in Live | **May be refused by key quota.** The client now falls back to app `web_search`; the UI/status reports which capability is active. See §5 |

@@ -210,7 +210,7 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
     }
 
 
-    public IReadOnlyList<DesktopItemSnapshot> FindElementsByNameRole(string name, string? role)
+    public IReadOnlyList<DesktopItemSnapshot> FindElementsByNameRole(string name, string? role, string? location = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -219,34 +219,31 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
 
         try
         {
-            List<AutomationElement> roots = new();
+            List<(AutomationElement Root, int Priority)> roots = new();
             nint foregroundWindow = GetForegroundWindow();
             if (foregroundWindow != 0)
             {
                 try
                 {
                     AutomationElement foreground = RunWithTimeout(() => AutomationElement.FromHandle(foregroundWindow));
-                    roots.Add(foreground);
+                    roots.Add((foreground, 0));
                 }
                 catch
                 {
-                    // fall through to root search
+                    // Root search below still covers the desktop and taskbar when the foreground provider is unavailable.
                 }
             }
 
-            if (roots.Count == 0)
-            {
-                roots.Add(AutomationElement.RootElement);
-            }
-
-            List<DesktopItemSnapshot> matches = new();
+            roots.Add((AutomationElement.RootElement, 1));
             string needle = name.Trim();
             ControlType[]? preferredTypes = ResolveRoleControlTypes(role);
-            foreach (AutomationElement root in roots)
+            List<HighlightCandidate> candidates = new();
+            Condition baseCondition = new AndCondition(
+                new PropertyCondition(AutomationElement.IsOffscreenProperty, false),
+                new PropertyCondition(AutomationElement.IsEnabledProperty, true));
+
+            foreach ((AutomationElement root, int rootPriority) in roots)
             {
-                Condition baseCondition = new AndCondition(
-                    new PropertyCondition(AutomationElement.IsOffscreenProperty, false),
-                    new PropertyCondition(AutomationElement.IsEnabledProperty, true));
                 AutomationElementCollection elements = root.FindAll(TreeScope.Descendants, baseCondition);
                 foreach (AutomationElement element in elements)
                 {
@@ -268,25 +265,30 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
                         continue;
                     }
 
-                    matches.Add(new DesktopItemSnapshot(
-                        elementName,
-                        type?.ProgrammaticName ?? "Unknown",
-                        bounds));
-                }
-
-                if (matches.Count > 0)
-                {
-                    break;
+                    candidates.Add(new HighlightCandidate(
+                        new DesktopItemSnapshot(elementName, type?.ProgrammaticName ?? "Unknown", bounds),
+                        GetLocationScore(element, location),
+                        elementName.Equals(needle, StringComparison.OrdinalIgnoreCase),
+                        rootPriority));
                 }
             }
 
-            return matches
-                .GroupBy(item => BuildSnapshotKey(item.Name, item.Bounds), StringComparer.Ordinal)
-                .Select(group => group.First())
-                .OrderBy(item => item.Bounds.Y)
-                .ThenBy(item => item.Bounds.X)
-                .Take(12)
-                .ToArray();
+            bool hasLocationMatches = !string.IsNullOrWhiteSpace(location) && candidates.Any(candidate => candidate.LocationScore > 0);
+            IEnumerable<HighlightCandidate> ordered = candidates
+                .Where(candidate => !hasLocationMatches || candidate.LocationScore > 0)
+                .GroupBy(candidate => BuildSnapshotKey(candidate.Item.Name, candidate.Item.Bounds), StringComparer.Ordinal)
+                .Select(group => group
+                    .OrderByDescending(candidate => candidate.LocationScore)
+                    .ThenByDescending(candidate => candidate.ExactName)
+                    .ThenBy(candidate => candidate.RootPriority)
+                    .First())
+                .OrderByDescending(candidate => candidate.LocationScore)
+                .ThenByDescending(candidate => candidate.ExactName)
+                .ThenBy(candidate => candidate.Item.Bounds.Y)
+                .ThenBy(candidate => candidate.Item.Bounds.X)
+                .Take(12);
+
+            return ordered.Select(candidate => candidate.Item).ToArray();
         }
         catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or TimeoutException)
         {
@@ -294,6 +296,65 @@ public sealed class DesktopAutomationService : IDesktopAutomationService
             return Array.Empty<DesktopItemSnapshot>();
         }
     }
+
+    private static int GetLocationScore(AutomationElement element, string? location)
+    {
+        if (string.IsNullOrWhiteSpace(location))
+        {
+            return 0;
+        }
+
+        string normalized = location.Trim().ToLowerInvariant().Replace('-', '_').Replace(' ', '_');
+        StringBuilder context = new();
+        AutomationElement? current = element;
+        for (int depth = 0; current is not null && depth < 8; depth++)
+        {
+            try
+            {
+                context.Append(' ').Append(current.Current.Name).Append(' ')
+                    .Append(current.Current.ClassName).Append(' ')
+                    .Append(current.Current.AutomationId).Append(' ')
+                    .Append(current.Current.ControlType?.ProgrammaticName);
+                current = TreeWalker.ControlViewWalker.GetParent(current);
+            }
+            catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException)
+            {
+                break;
+            }
+        }
+
+        string metadata = context.ToString().ToLowerInvariant();
+        return normalized switch
+        {
+            "left_sidebar" or "sidebar" or "navigation" =>
+                metadata.Contains("navigation", StringComparison.Ordinal) ||
+                metadata.Contains("tree", StringComparison.Ordinal) ||
+                metadata.Contains("sidebar", StringComparison.Ordinal) ? 100 : 0,
+            "quick_access" or "main_pane" or "content" =>
+                !metadata.Contains("navigation", StringComparison.Ordinal) &&
+                !metadata.Contains("tree", StringComparison.Ordinal) &&
+                (metadata.Contains("quick access", StringComparison.Ordinal) ||
+                 metadata.Contains("items view", StringComparison.Ordinal) ||
+                 metadata.Contains("folderview", StringComparison.Ordinal) ||
+                 metadata.Contains("listview", StringComparison.Ordinal)) ? 100 : 0,
+            "desktop" =>
+                metadata.Contains("progman", StringComparison.Ordinal) ||
+                metadata.Contains("workerw", StringComparison.Ordinal) ||
+                metadata.Contains("shelldll_defview", StringComparison.Ordinal) ||
+                metadata.Contains("folderview", StringComparison.Ordinal) ? 100 : 0,
+            "taskbar" =>
+                metadata.Contains("shell_traywnd", StringComparison.Ordinal) ||
+                metadata.Contains("mstasklistwclass", StringComparison.Ordinal) ||
+                metadata.Contains("tasklist", StringComparison.Ordinal) ? 100 : 0,
+            _ => 0
+        };
+    }
+
+    private sealed record HighlightCandidate(
+        DesktopItemSnapshot Item,
+        int LocationScore,
+        bool ExactName,
+        int RootPriority);
 
     public FocusedWindowSnapshot? GetFocusedWindow()
     {

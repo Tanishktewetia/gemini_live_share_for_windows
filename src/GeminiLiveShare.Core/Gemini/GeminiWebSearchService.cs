@@ -6,7 +6,9 @@ namespace GeminiLiveShare.Core.Gemini;
 
 public sealed class GeminiWebSearchService : IWebSearchService
 {
-    private static readonly string[] Models = ["gemini-3.5-flash", "gemini-3.0-flash"];
+    // These are the lightweight generateContent models verified for the API key used by
+    // this app. The Live model name is not automatically valid for regular REST calls.
+    private static readonly string[] Models = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite"];
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
 
     public async Task<WebSearchResult> SearchAsync(string apiKey, string query, CancellationToken cancellationToken = default)

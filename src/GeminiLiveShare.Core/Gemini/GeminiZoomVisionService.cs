@@ -7,7 +7,9 @@ namespace GeminiLiveShare.Core.Gemini;
 public sealed class GeminiZoomVisionService : IZoomVisionService
 {
     // Non-Live call for zoomed crops. Keep a pinned fallback if alias is unavailable.
-    private static readonly string[] Models = ["gemini-3.5-flash", "gemini-3.0-flash"];
+    // Keep zoom on the lightweight regular REST models; the Live model name is not
+    // automatically valid for generateContent image requests.
+    private static readonly string[] Models = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite"];
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
 
     public async Task<string> AnalyzeAsync(string apiKey, byte[] croppedJpeg, string question, CancellationToken cancellationToken = default)

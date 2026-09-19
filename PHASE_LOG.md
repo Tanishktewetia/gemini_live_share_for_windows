@@ -590,3 +590,29 @@ implementation, files changed, verification performed, and manual test steps.
 
 
 
+
+
+## Phase 7 corrective follow-up — tool stability, search models and highlighting
+
+- **Date:** 2026-09-19
+- **Status:** Implemented and automated-tested; real-key/manual acceptance is still pending.
+- **Trigger:** The 18:49–19:01 session log showed that Live tool setup reached the app fallback, but regular web search still tried unavailable `gemini-3.0-flash`; tool-call turns also triggered the 4-second audio watchdog, causing disconnect/reconnect cycles. Highlight calls were logged without enough result detail to prove that the overlay was visible or that the right duplicate control was selected.
+- **Implementation:**
+  - Changed regular `web_search` and `zoom_region` model fallbacks to the lightweight `generateContent` models already verified for this project: `gemini-flash-lite-latest`, then `gemini-3.5-flash-lite`.
+  - Paused the assistant-audio watchdog while one or more desktop/search/zoom tools are executing. After tool responses are sent, a separate 15-second watchdog starts; a tool operation is no longer treated as a silent assistant turn.
+  - Added non-sensitive tool-response diagnostics for success/error, match count, selected bounds, search source count and zoom bounds. Highlight success now requires the overlay service to report `IsVisible`.
+  - Made highlighting search both the foreground window and the UI Automation root, with optional `location` hints (`left_sidebar`, `quick_access`, `desktop`, `taskbar`) used to rank/filter duplicate accessible names. The browser-agent code and extension were not changed.
+  - Added an automated regression test that holds a tool call across the old watchdog boundary and verifies there is no reconnect.
+- **Files changed:** `src/GeminiLiveShare.Core/Gemini/GeminiWebSearchService.cs`, `GeminiZoomVisionService.cs`, `SessionOrchestrator.cs`, `GeminiLiveClient.cs`, `src/GeminiLiveShare.Core/Desktop/DesktopAutomationService.cs`, `IDesktopAutomationService.cs`, and `src/GeminiLiveShare.Tests/Program.cs`.
+- **Automated verification:**
+  - `dotnet build GeminiLiveShare.sln --no-restore -p:BaseOutputPath=build-phase7-fix\`: passed, 0 warnings, 0 errors.
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj --no-build -p:BaseOutputPath=build-phase7-fix\`: passed, including the new tool-watchdog regression.
+  - `git diff --check`: passed.
+  - No files under `extension/` or `src/GeminiLiveShare.Core/BrowserAgent/` were modified.
+- **Not yet verified:** real API web-search success with the user's key, real zoom response, visible highlight placement at the user's DPI/multi-monitor setup, and long-running manual screen-share stability. Phase 7 remains incomplete until those checks pass.
+- **Manual verification:**
+  1. Restart the app so the new binary is running. Start a conversation and turn screen sharing on.
+  2. Ask for a current web lookup. The log must show `web search tool completed`; if the key has no quota, it must explicitly say search is unavailable rather than inventing an answer.
+  3. In File Explorer, ask “highlight Downloads in the left sidebar.” A visible orange box must sit on the sidebar item, not the main content item. Repeat at 125%/150% scaling if available.
+  4. Ask for a zoom/read-small-text operation. The log must show a tool response with bounds and no reconnect while the tool is running.
+  5. Leave the conversation running for at least two minutes with screen share enabled. There must be no watchdog-triggered `Disconnecting`/`Connected` pair unless the network actually fails.
