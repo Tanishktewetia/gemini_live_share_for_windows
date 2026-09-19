@@ -6,6 +6,7 @@ using GeminiLiveShare.Core.Desktop;
 using GeminiLiveShare.Core.Storage;
 using GeminiLiveShare.Core.Vision;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Windows.Graphics.Imaging;
 using System.Threading.Channels;
 
@@ -65,6 +66,9 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     private bool _isWebSearchAvailable = true;
     private bool _hasReconnected;
     private bool _browserPageContextAttached;
+    private readonly object _desktopExpectationLock = new();
+    private PendingDesktopExpectation? _pendingDesktopExpectation;
+    private static readonly Regex NumberRegex = new(@"\b(\d+)\b", RegexOptions.Compiled);
 
     internal const string ScreenShareOnNotice =
         "App notice (not spoken by the user): screen sharing is now ON. You are receiving screenshots of the user's " +
@@ -160,6 +164,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 _isWebSearchAvailable = true;
                 _hasReconnected = false;
                 _browserPageContextAttached = false;
+                ClearPendingDesktopExpectation();
                 Interlocked.Exchange(ref _restoreConversationStatePending, 0);
                 await _liveClient.ConnectAsync(apiKey, cancellationToken).ConfigureAwait(false);
                 _audioPlayback.Start();
@@ -227,6 +232,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             _isWebSearchAvailable = true;
             _hasReconnected = false;
             _browserPageContextAttached = false;
+            ClearPendingDesktopExpectation();
             Interlocked.Exchange(ref _restoreConversationStatePending, 0);
             LogDiagnosticsSummary("session end");
             StatusChanged?.Invoke(this, "Conversation stopped");
@@ -424,6 +430,17 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         try
         {
+            if (e.Role.Equals("user", StringComparison.OrdinalIgnoreCase))
+            {
+                await SendDesktopIntentContextIfNeededAsync(e.Text).ConfigureAwait(false);
+            }
+            else if (e.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase) &&
+                     await ShouldRequestAssistantCorrectionAsync(e.Text).ConfigureAwait(false))
+            {
+                // Ignore this low-confidence assistant text in history and force a corrected reply.
+                return;
+            }
+
             await _chatHistory.AddAsync(new ChatMessage
             {
                 SessionId = sessionId,
@@ -431,6 +448,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
                 Text = e.Text,
                 CreatedAtUtc = DateTime.UtcNow
             }).ConfigureAwait(false);
+
             if (e.Role.Equals("user", StringComparison.OrdinalIgnoreCase) && IsPageContextRequest(e.Text))
             {
                 await SendBrowserPageContextAsync().ConfigureAwait(false);
@@ -439,6 +457,135 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         catch (Exception ex)
         {
             StatusChanged?.Invoke(this, $"Unable to save chat transcript: {ex.Message}");
+        }
+    }
+
+    private async Task SendDesktopIntentContextIfNeededAsync(string userText)
+    {
+        if (!IsConnected || !TryBuildDesktopIntentContext(userText, out string context, out PendingDesktopExpectation? expectation))
+        {
+            return;
+        }
+
+        if (expectation is not null)
+        {
+            SetPendingDesktopExpectation(expectation);
+        }
+
+        await _liveClient.SendTextAsync(context, _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+        StatusChanged?.Invoke(this, "Desktop automation context sent (authoritative)");
+    }
+
+    private bool TryBuildDesktopIntentContext(string userText, out string context, out PendingDesktopExpectation? expectation)
+    {
+        string normalized = userText.Trim().ToLowerInvariant();
+        expectation = null;
+
+        if (normalized.Contains("how many") && normalized.Contains("desktop") && normalized.Contains("icon"))
+        {
+            IReadOnlyList<DesktopItemSnapshot> icons = _desktopAutomation.ListDesktopIcons();
+            int count = icons.Count;
+            expectation = new PendingDesktopExpectation(DesktopExpectationType.DesktopIconCount, count, null, DateTimeOffset.UtcNow, 0);
+            context =
+                "Authoritative desktop automation result (high priority): " +
+                $"The exact number of visible desktop icons is {count}. " +
+                "For this question, answer with that exact number only. Do not estimate or round.";
+            return true;
+        }
+
+        if (normalized.Contains("how many") && normalized.Contains("taskbar") && normalized.Contains("icon"))
+        {
+            IReadOnlyList<DesktopItemSnapshot> items = _desktopAutomation.ListTaskbarItems();
+            int count = items.Count;
+            expectation = new PendingDesktopExpectation(DesktopExpectationType.TaskbarItemCount, count, null, DateTimeOffset.UtcNow, 0);
+            context =
+                "Authoritative desktop automation result (high priority): " +
+                $"The exact number of visible taskbar items is {count}. " +
+                "For this question, answer with that exact number only. Do not estimate or round.";
+            return true;
+        }
+
+        if (normalized.Contains("where") && (normalized.Contains("pointer") || normalized.Contains("cursor")))
+        {
+            DesktopElementSnapshot? element = _desktopAutomation.GetElementUnderCursor();
+            context = element is null
+                ? "Authoritative desktop automation result: pointer element could not be resolved. Say you cannot verify pointer location exactly right now."
+                : "Authoritative desktop automation result (high priority): " +
+                  $"pointer is over '{element.Name}' ({element.ControlType}) at bounds " +
+                  $"x={element.Bounds.X}, y={element.Bounds.Y}, width={element.Bounds.Width}, height={element.Bounds.Height}. " +
+                  "Answer from this exact data and do not guess.";
+            return true;
+        }
+
+        context = string.Empty;
+        return false;
+    }
+
+    private async Task<bool> ShouldRequestAssistantCorrectionAsync(string assistantText)
+    {
+        PendingDesktopExpectation? expectation = GetPendingDesktopExpectation();
+        if (expectation is null)
+        {
+            return false;
+        }
+
+        if (DateTimeOffset.UtcNow - expectation.CreatedAtUtc > TimeSpan.FromSeconds(20))
+        {
+            ClearPendingDesktopExpectation();
+            return false;
+        }
+
+        if (expectation.Type is DesktopExpectationType.DesktopIconCount or DesktopExpectationType.TaskbarItemCount)
+        {
+            Match match = NumberRegex.Match(assistantText);
+            if (!match.Success || !int.TryParse(match.Groups[1].Value, out int actual) || actual != expectation.ExpectedCount)
+            {
+                if (expectation.CorrectionsIssued >= 2)
+                {
+                    ClearPendingDesktopExpectation();
+                    return false;
+                }
+
+                PendingDesktopExpectation updated = expectation with { CorrectionsIssued = expectation.CorrectionsIssued + 1 };
+                SetPendingDesktopExpectation(updated);
+                await _liveClient.SendTextAsync(
+                    "Correction (authoritative desktop data): your previous answer was not exact. " +
+                    $"The exact count is {expectation.ExpectedCount}. " +
+                    "Reply again using that exact count only, with no estimate words.",
+                    _sessionCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+                StatusChanged?.Invoke(this, "Assistant answer corrected using desktop automation");
+                return true;
+            }
+
+            ClearPendingDesktopExpectation();
+            return false;
+        }
+
+        ClearPendingDesktopExpectation();
+        return false;
+    }
+
+    private void SetPendingDesktopExpectation(PendingDesktopExpectation expectation)
+    {
+        lock (_desktopExpectationLock)
+        {
+            _pendingDesktopExpectation = expectation;
+        }
+    }
+
+    private PendingDesktopExpectation? GetPendingDesktopExpectation()
+    {
+        lock (_desktopExpectationLock)
+        {
+            return _pendingDesktopExpectation;
+        }
+    }
+
+    private void ClearPendingDesktopExpectation()
+    {
+        lock (_desktopExpectationLock)
+        {
+            _pendingDesktopExpectation = null;
         }
     }
 
@@ -905,6 +1052,19 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             _diagnostics.Log($"reconnect: context restore failed: {ex.Message}");
         }
     }
+    private enum DesktopExpectationType
+    {
+        DesktopIconCount,
+        TaskbarItemCount
+    }
+
+    private sealed record PendingDesktopExpectation(
+        DesktopExpectationType Type,
+        int ExpectedCount,
+        string? ExpectedName,
+        DateTimeOffset CreatedAtUtc,
+        int CorrectionsIssued);
+
     private void RecordFrameUpload(TimeSpan upload, int jpegBytes)
     {
         Interlocked.Increment(ref _framesSent);
@@ -1099,5 +1259,6 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         SpeakingStateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
+
 
 

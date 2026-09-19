@@ -2,6 +2,7 @@ using System.Text.Json;
 using GeminiLiveShare.Core.Audio;
 using GeminiLiveShare.Core.Gemini;
 using GeminiLiveShare.Core.Diagnostics;
+using GeminiLiveShare.Core.Desktop;
 using GeminiLiveShare.Core.Gemini.Models;
 using GeminiLiveShare.Core.Interop;
 using GeminiLiveShare.Core.Security;
@@ -26,6 +27,7 @@ await ValidateSpeakingStateAsync();
 await ValidateScreenShareNoticeFollowsRealFrameAsync();
 await ValidateReconnectContextRestoreAsync();
 await ValidateSentFrameDiagnosticsAsync();
+await ValidateDesktopIntentGroundingAsync();
 ValidateGlobalHotkeySettings();
 ValidatePlaybackQueueIsLossless();
 ValidateTitleFormatting();
@@ -704,6 +706,39 @@ static async Task ValidateSentFrameDiagnosticsAsync()
         }
     }
 }
+static async Task ValidateDesktopIntentGroundingAsync()
+{
+    FakeLiveClient client = new();
+    RecordingChatHistory history = new();
+    SessionOrchestrator orchestrator = new(
+        new FakeAudioCapture(),
+        new FakeAudioPlayback(),
+        client,
+        new FakeScreenCapture(),
+        new FakeImageProcessing(),
+        history,
+        desktopAutomation: new FakeDesktopAutomationService(iconCount: 56, taskbarCount: 13));
+
+    await orchestrator.StartAsync("test-key");
+    client.EmitTranscription("user", "How many icons are there on my desktop?");
+    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("exact number of visible desktop icons is 56", StringComparison.OrdinalIgnoreCase)),
+        "desktop icon count context was not sent");
+
+    int beforeAssistantMessages = history.Messages.Count(message => message.Role == "assistant");
+    client.EmitTranscription("assistant", "I see about 40 icons.");
+    await WaitUntilAsync(() => client.TextInputs.Any(text => text.Contains("The exact count is 56", StringComparison.OrdinalIgnoreCase)),
+        "assistant mismatch correction was not sent");
+    Require(history.Messages.Count(message => message.Role == "assistant") == beforeAssistantMessages,
+        "mismatched assistant answer was persisted instead of being corrected");
+
+    client.EmitTranscription("assistant", "There are exactly 56 icons on your desktop.");
+    await WaitUntilAsync(() => history.Messages.Any(message =>
+            message.Role == "assistant" && message.Text.Contains("56 icons", StringComparison.OrdinalIgnoreCase)),
+        "corrected assistant answer was not persisted");
+
+    await orchestrator.StopAsync();
+}
+
 static async Task WaitUntilAsync(Func<bool> condition, string failureMessage)
 {
     for (int attempt = 0; attempt < 100; attempt++)
@@ -776,12 +811,15 @@ file sealed class FakeLiveClient : IGeminiLiveClient
     public event EventHandler? TurnCompleted;
     public event EventHandler? Interrupted;
     public event EventHandler<string>? StatusChanged { add { } remove { } }
-    public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived { add { } remove { } }
+    public event EventHandler<TranscriptionEventArgs>? TranscriptionReceived;
     public event EventHandler<ConnectionAvailabilityChangedEventArgs>? ConnectionAvailabilityChanged;
     public event EventHandler<SessionReadyEventArgs>? SessionReady;
     public event EventHandler<ToolCallsEventArgs>? ToolCallsReceived;
     public bool IsConnected { get; private set; }
     public List<string> TextInputs { get; } = [];
+
+    public void EmitTranscription(string role, string text) =>
+        TranscriptionReceived?.Invoke(this, new TranscriptionEventArgs(role, text));
 
     public Task ConnectAsync(string apiKey, CancellationToken cancellationToken = default)
     {
@@ -900,6 +938,52 @@ file sealed class SeededChatHistory(IReadOnlyList<ChatMessage> messages) : IChat
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
+file sealed class RecordingChatHistory : IChatHistoryRepository
+{
+    public event EventHandler<ChatMessageAddedEventArgs>? MessageAdded;
+    public List<ChatMessage> Messages { get; } = [];
+
+    public Task AddAsync(ChatMessage message)
+    {
+        Messages.Add(message);
+        MessageAdded?.Invoke(this, new ChatMessageAddedEventArgs(message));
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<ChatMessage>> GetBySessionAsync(string sessionId) =>
+        Task.FromResult<IReadOnlyList<ChatMessage>>(Messages.Where(message => message.SessionId == sessionId).ToArray());
+
+    public Task<IReadOnlyList<ChatMessage>> GetAllAsync() => Task.FromResult<IReadOnlyList<ChatMessage>>(Messages);
+
+    public Task<IReadOnlyList<ChatSessionMetadata>> GetSessionMetadataAsync() =>
+        Task.FromResult<IReadOnlyList<ChatSessionMetadata>>(Array.Empty<ChatSessionMetadata>());
+
+    public Task SetSessionTitleAsync(string sessionId, string title, bool isUserEdited) => Task.CompletedTask;
+
+    public Task DeleteSessionAsync(string sessionId) => Task.CompletedTask;
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+file sealed class FakeDesktopAutomationService(int iconCount, int taskbarCount) : IDesktopAutomationService
+{
+    public DesktopElementSnapshot? GetElementUnderCursor() =>
+        new("Codex", "ControlType.ListItem", ["ControlType.Pane:Desktop"], new System.Drawing.Rectangle(100, 100, 80, 30));
+
+    public IReadOnlyList<DesktopItemSnapshot> ListTaskbarItems() =>
+        Enumerable.Range(1, taskbarCount)
+            .Select(index => new DesktopItemSnapshot($"Taskbar {index}", "ControlType.Button", new System.Drawing.Rectangle(index * 10, 0, 10, 10)))
+            .ToArray();
+
+    public IReadOnlyList<DesktopItemSnapshot> ListDesktopIcons() =>
+        Enumerable.Range(1, iconCount)
+            .Select(index => new DesktopItemSnapshot($"Icon {index}", "ControlType.ListItem", new System.Drawing.Rectangle((index % 10) * 10, (index / 10) * 10, 10, 10)))
+            .ToArray();
+
+    public FocusedWindowSnapshot? GetFocusedWindow() =>
+        new("explorer", "Desktop", null);
+}
+
 file sealed class FakeChatHistory : IChatHistoryRepository
 {
     public event EventHandler<ChatMessageAddedEventArgs>? MessageAdded { add { } remove { } }
@@ -914,5 +998,7 @@ file sealed class FakeChatHistory : IChatHistoryRepository
     public Task DeleteSessionAsync(string sessionId) => Task.CompletedTask;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
+
+
 
 

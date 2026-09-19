@@ -7,6 +7,33 @@ implementation, files changed, verification performed, and manual test steps.
 > [`PROJECT_STATE.md`](PROJECT_STATE.md). Open this file when you need the measurements and
 > reasoning behind a past fix.
 
+## Phase 7d hardening - authoritative desktop intent routing + assistant correction
+
+- **Date:** 2026-09-19
+- **Status:** Implemented; build and tests pass.
+- **Goal:** Make desktop-icon/taskbar counting deterministic and eliminate approximate/guessed assistant replies for these intents.
+- **Implementation:**
+  - Added desktop intent router in SessionOrchestrator for user queries like:
+    - desktop icon count
+    - taskbar item count
+    - pointer/cursor location
+  - For matched intents, app now sends authoritative UI Automation facts immediately to Gemini (exact counts/coordinates), with strict instruction text to avoid estimates.
+  - Added pending expectation tracking for count intents and an assistant-response validator:
+    - if Gemini replies with missing/mismatched count, app sends correction turn with exact value and requests re-answer
+    - mismatched assistant reply is suppressed from chat history
+    - corrected exact reply is persisted
+  - Added lifecycle cleanup for pending expectations on start/stop.
+  - Added automated harness validation (ValidateDesktopIntentGroundingAsync) proving:
+    - authoritative count context is sent
+    - mismatched assistant count triggers correction
+    - mismatched count is not persisted
+    - corrected exact count is persisted
+- **Files changed:**
+  - src/GeminiLiveShare.Core/Gemini/SessionOrchestrator.cs
+  - src/GeminiLiveShare.Tests/Program.cs
+- **Verification:**
+  - dotnet build GeminiLiveShare.sln (pass)
+  - dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj (pass)
 ## Phase 7d hotfix - start fallback when Live tool setup is rejected
 
 - **Date:** 2026-09-19
@@ -348,6 +375,7 @@ implementation, files changed, verification performed, and manual test steps.
   5. Repeat steps 3–4 with headphones to confirm there is no regression.
   6. Mute/unmute the mic mid-session and confirm the status message and capture resume.
 - **If interruptions still occur:** a second layer is available but not yet applied. Lower Gemini's server VAD sensitivity (`realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity = START_SENSITIVITY_LOW`) in `SetupMessage`. It was held back because it also makes genuine barge-in less sensitive.
+
 
 
 
