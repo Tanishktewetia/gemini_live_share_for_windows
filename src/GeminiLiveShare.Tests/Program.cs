@@ -317,6 +317,20 @@ static void ValidateWebSearchSetup()
         "without search, the instruction did not forbid claiming to have searched");
     Require(noSearchInstruction.Contains("Screen sharing is OFF when the conversation starts", StringComparison.Ordinal),
         "the screen access rules were lost from the instruction");
+    Require(noSearchInstruction.Contains("Never guess", StringComparison.Ordinal),
+        "the instruction did not explicitly ban guessing");
+    Require(noSearchInstruction.Contains("use an available tool first", StringComparison.Ordinal),
+        "the instruction did not require tool-first answers for fine-detail tasks");
+    Require(noSearchInstruction.Contains("point at it with the mouse", StringComparison.Ordinal),
+        "the instruction did not ask for pointer-based clarification when intent is unclear");
+
+    string instructionWithFixedDate = GeminiLiveClient.BuildInstruction(
+        webSearchAvailable: false,
+        now: new DateTimeOffset(2026, 9, 19, 14, 35, 0, TimeSpan.FromHours(5.5)));
+    Require(instructionWithFixedDate.Contains("Model: models/gemini-3.1-flash-live-preview", StringComparison.Ordinal),
+        "the instruction did not include the active model name");
+    Require(instructionWithFixedDate.Contains("User-local date when this instruction was built: 2026-09-19 (UTC+05:30)", StringComparison.Ordinal),
+        "the instruction did not include the user-local date context");
 }
 
 static void ValidateLiveProtocol()

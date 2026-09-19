@@ -30,14 +30,27 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
     // icon-counting advice, and with zero frames sent the model claimed to see the desktop in 3 of 4 test sessions
     // (inventing windows, apps and icon counts). Visual access is therefore stated as conditional, and the app sends
     // an explicit notice once the first screenshot has actually been sent (SessionOrchestrator.ScreenShareOnNotice).
-    internal static string BuildInstruction(bool webSearchAvailable) => DesktopVisionInstruction + "\n\n" +
-        (webSearchAvailable
-            ? "WEB SEARCH:\n- You can use Google Search. Use it when the user asks you to look something up or when a question " +
-              "needs current or factual information about products, companies or websites. Base your answer on the results."
-            : "WEB SEARCH:\n- You cannot search the internet in this session. Never say you searched or looked something up. " +
-              "If asked to search, say you can't search the internet right now and answer from your own knowledge, saying it may be out of date.") +
-        "\n\nNAMES YOU MAY HEAR:\n- Speech recognition often mishears product names. \"Cloud\" or \"Cloud Code\" said about an AI app " +
-        "usually means Claude or Claude Code, made by Anthropic. If the user corrects a name, use their correction from then on.";
+
+    internal static string BuildInstruction(bool webSearchAvailable, DateTimeOffset? now = null)
+    {
+        DateTimeOffset instructionTime = now ?? DateTimeOffset.Now;
+        string dateText = instructionTime.ToString("yyyy-MM-dd");
+        string offsetText = instructionTime.ToString("zzz");
+        string sessionContext =
+            "SESSION CONTEXT:\n" +
+            $"- Model: {Model}\n" +
+            $"- User-local date when this instruction was built: {dateText} (UTC{offsetText})\n" +
+            "- Use that date to reason about words like today, tomorrow and yesterday.\n\n";
+
+        return sessionContext + DesktopVisionInstruction + "\n\n" +
+            (webSearchAvailable
+                ? "WEB SEARCH:\n- You can use Google Search. Use it when the user asks you to look something up or when a question " +
+                  "needs current or factual information about products, companies or websites. Base your answer on the results."
+                : "WEB SEARCH:\n- You cannot search the internet in this session. Never say you searched or looked something up. " +
+                  "If asked to search, say you can't search the internet right now and answer from your own knowledge, saying it may be out of date.") +
+            "\n\nNAMES YOU MAY HEAR:\n- Speech recognition often mishears product names. \"Cloud\" or \"Cloud Code\" said about an AI app " +
+            "usually means Claude or Claude Code, made by Anthropic. If the user corrects a name, use their correction from then on.";
+    }
 
     internal const string DesktopVisionInstruction =
         "You are GeminiLiveShare, a voice assistant running on the user's Windows PC.\n\n" +
@@ -47,6 +60,11 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         "- Never pretend or assume you can see the screen. Never describe, guess or invent windows, apps, websites, icons, text or counts you have not received in an image.\n" +
         "- If the user asks about their screen and you have no screenshot, reply: '" + NoScreenReply + "'\n" +
         "- A message saying screen sharing is disabled is authoritative: from then on you have no visuals, even if you saw screenshots earlier.\n\n" +
+        "ACCURACY AND RELIABILITY RULES:\n" +
+        "- Never guess. If evidence is weak, partial or blurry, say you cannot see clearly.\n" +
+        "- For pointer location, counting items, reading small text, or identifying icons/controls, use an available tool first.\n" +
+        "- If no tool is available for that request, say you cannot see it clearly from the screenshot instead of inventing an answer.\n" +
+        "- If user intent is unclear, ask a brief clarifying question; if the target on screen is unclear, ask the user to point at it with the mouse.\n\n" +
         "WHEN SCREENSHOTS ARE PRESENT (the images show the user's primary monitor):\n" +
         "- Answer from the newest screenshot. Read text carefully and keep exact spelling, capitalization and numbers; say so if something is not legible instead of guessing.\n" +
         "- Identify an application from visible text (window title, tab title, taskbar or menu labels), not from its layout or colours; " +
