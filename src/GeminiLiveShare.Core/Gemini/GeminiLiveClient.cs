@@ -32,7 +32,6 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             {
                 type = "object",
                 properties = new { },
-                additionalProperties = false
             })
         },
         new FunctionDeclaration
@@ -43,7 +42,6 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             {
                 type = "object",
                 properties = new { },
-                additionalProperties = false
             })
         },
         new FunctionDeclaration
@@ -54,7 +52,6 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             {
                 type = "object",
                 properties = new { },
-                additionalProperties = false
             })
         },
         new FunctionDeclaration
@@ -65,7 +62,6 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             {
                 type = "object",
                 properties = new { },
-                additionalProperties = false
             })
         },
         new FunctionDeclaration
@@ -81,7 +77,6 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                     role = new { type = "string" }
                 },
                 required = new[] { "name" },
-                additionalProperties = false
             })
         },
         new FunctionDeclaration
@@ -93,7 +88,6 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                 type = "object",
                 properties = new { query = new { type = "string" } },
                 required = new[] { "query" },
-                additionalProperties = false
             })
         },
         new FunctionDeclaration
@@ -108,9 +102,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                     cells = new
                     {
                         type = "array",
-                        items = new { type = "string" },
-                        minItems = 1,
-                        maxItems = 6
+                        items = new { type = "string" }
                     },
                     box = new
                     {
@@ -123,12 +115,10 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
                             height = new { type = "integer" }
                         },
                         required = new[] { "x", "y", "width", "height" },
-                        additionalProperties = false
                     },
                     question = new { type = "string" }
                 },
                 required = new[] { "question" },
-                additionalProperties = false
             })
         }
     ];
@@ -173,7 +163,9 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         "ACCURACY AND RELIABILITY RULES:\n" +
         "- Never guess. If evidence is weak, partial or blurry, say you cannot see clearly.\n" +
         "- For pointer location, counting items, reading small text, or identifying icons/controls, use an available tool first.\n" +
-        "- Available desktop tools include get_element_under_cursor, list_taskbar_items, list_desktop_icons, get_focused_window, and zoom_region.\n" +
+        "- Available desktop tools include get_element_under_cursor, list_taskbar_items, list_desktop_icons, get_focused_window, zoom_region, and highlight_element.\n" +
+        "- When the user asks you to highlight or show where to click, call highlight_element first. Never claim a visible highlight unless the tool succeeds.\n" +
+        "- When current web information is needed and Live Google Search is unavailable, call web_search. Never claim a search happened without a successful tool result.\n" +
         "- For details UI Automation cannot access (tiny text in images, scanned PDFs), call zoom_region and specify either grid cells A1-D4 or a box.\n" +
         "- If no tool is available for that request, say you cannot see it clearly from the screenshot instead of inventing an answer.\n" +
         "- If user intent is unclear, ask a brief clarifying question; if the target on screen is unclear, ask the user to point at it with the mouse.\n\n" +
@@ -482,7 +474,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
         exception.Message.Contains("exceeded your current quota", StringComparison.OrdinalIgnoreCase) ||
         exception.Message.Contains("RESOURCE_EXHAUSTED", StringComparison.OrdinalIgnoreCase);
 
-    private static ToolConfiguration[]? BuildTools(bool webSearchEnabled, bool desktopToolsEnabled)
+    internal static ToolConfiguration[]? BuildTools(bool webSearchEnabled, bool desktopToolsEnabled)
     {
         List<ToolConfiguration> tools = [];
 
@@ -493,10 +485,23 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
 
         if (desktopToolsEnabled)
         {
-            FunctionDeclaration[] declarations = webSearchEnabled
-                ? s_desktopFunctionDeclarations.Where(declaration => declaration.Name != "web_search").ToArray()
-                : s_desktopFunctionDeclarations;
-            tools.Add(new ToolConfiguration { FunctionDeclarations = declarations });
+            tools.Add(new ToolConfiguration
+            {
+                FunctionDeclarations = webSearchEnabled
+                    ? s_desktopFunctionDeclarations.Where(declaration => declaration.Name != "web_search").ToArray()
+                    : s_desktopFunctionDeclarations
+            });
+        }
+        else if (!webSearchEnabled)
+        {
+            // The regular Gemini web-search fallback must remain callable even if the desktop
+            // function declaration set is rejected or disabled.
+            tools.Add(new ToolConfiguration
+            {
+                FunctionDeclarations = s_desktopFunctionDeclarations
+                    .Where(declaration => declaration.Name == "web_search")
+                    .ToArray()
+            });
         }
 
         return tools.Count == 0 ? null : tools.ToArray();
@@ -543,7 +548,7 @@ public sealed class GeminiLiveClient : IGeminiLiveClient
             return new SocketSetupResult(
                 socket,
                 GoogleSearchEnabled: webSearch,
-                AppWebSearchEnabled: !webSearch && desktopTools,
+                AppWebSearchEnabled: !webSearch,
                 DesktopToolsEnabled: desktopTools);
         }
         catch

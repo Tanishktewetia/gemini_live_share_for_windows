@@ -1010,6 +1010,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         try
         {
+            _diagnostics.Log($"tool calls received: {string.Join(", ", e.Calls.Select(call => call.Name))}");
             List<ToolResponsePayload> responses = new(e.Calls.Count);
             foreach (ToolCallRequest call in e.Calls)
             {
@@ -1062,22 +1063,6 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         IReadOnlyList<DesktopItemSnapshot> matches = _desktopAutomation.FindElementsByNameRole(name, role);
         string source = "ui_automation";
-        if (matches.Count == 0 && _browserAgentBridge is not null)
-        {
-            try
-            {
-                JsonElement browserArgs = JsonSerializer.SerializeToElement(new { name, role });
-                ToolCallResult browserResult = await _browserAgentBridge
-                    .SendToolCallAsync("find_element", browserArgs, cancellationToken)
-                    .ConfigureAwait(false);
-                matches = ParseBrowserElementMatches(browserResult.Payload);
-                source = "browser_page";
-            }
-            catch (Exception ex)
-            {
-                _diagnostics.Log($"highlight: browser fallback unavailable: {ex.Message}");
-            }
-        }
 
         if (matches.Count == 0)
         {
@@ -1179,40 +1164,6 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         }
 
         return true;
-    }
-
-    private static IReadOnlyList<DesktopItemSnapshot> ParseBrowserElementMatches(JsonElement payload)
-    {
-        if (!payload.TryGetProperty("matches", out JsonElement matches) || matches.ValueKind != JsonValueKind.Array)
-        {
-            return Array.Empty<DesktopItemSnapshot>();
-        }
-
-        List<DesktopItemSnapshot> result = [];
-        foreach (JsonElement match in matches.EnumerateArray())
-        {
-            if (!match.TryGetProperty("name", out JsonElement nameElement) ||
-                !match.TryGetProperty("bounds", out JsonElement bounds) ||
-                !TryGetInt(bounds, "x", out int x) || !TryGetInt(bounds, "y", out int y) ||
-                !TryGetInt(bounds, "width", out int width) || !TryGetInt(bounds, "height", out int height) ||
-                width <= 0 || height <= 0)
-            {
-                continue;
-            }
-
-            string name = nameElement.GetString()?.Trim() ?? string.Empty;
-            if (name.Length == 0)
-            {
-                continue;
-            }
-
-            string role = match.TryGetProperty("role", out JsonElement roleElement)
-                ? roleElement.GetString() ?? "Unknown"
-                : "Unknown";
-            result.Add(new DesktopItemSnapshot(name, role, new System.Drawing.Rectangle(x, y, width, height)));
-        }
-
-        return result;
     }
 
     private async Task ClearHighlightAsync()

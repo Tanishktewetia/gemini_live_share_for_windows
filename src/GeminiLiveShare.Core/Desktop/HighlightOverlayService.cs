@@ -19,6 +19,8 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
     private const uint WdaExcludeFromCapture = 0x11;
     private const short MouseButtonDown = unchecked((short)0x8000);
     private const int VirtualKeyLeftButton = 0x01;
+    private const int WmNcHitTest = 0x0084;
+    private const int HtTransparent = -1;
 
     private readonly object _gate = new();
     private Thread? _thread;
@@ -269,6 +271,16 @@ public sealed class HighlightOverlayService : IHighlightOverlayService
             nint exStyle = GetWindowLongPtr(hwnd, GwlExStyle);
             exStyle |= WsExTransparent | WsExLayered | WsExToolwindow | WsExNoactivate;
             SetWindowLongPtr(hwnd, GwlExStyle, exStyle);
+            source.AddHook((nint windowHandle, int message, nint wParam, nint lParam, ref bool handled) =>
+            {
+                if (message == WmNcHitTest)
+                {
+                    handled = true;
+                    return new nint(HtTransparent);
+                }
+
+                return nint.Zero;
+            });
             _ = SetWindowDisplayAffinity(hwnd, WdaExcludeFromCapture);
         }
 

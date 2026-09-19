@@ -102,9 +102,9 @@ session log. See `PHASE_LOG.md` §1 for the numbers.
 | Chat history, titles, rename | Working. SQLite, AI-generated titles, backfill at startup |
 | Overlay UI, tray, global hotkey | Working (Phase 5 complete) |
 | Reconnect with session resumption | Working |
-| Phase 7e zoom_region + fresh-frame forcing | Working; regular Gemini crop analysis plus Gemini-only A1-D4 grid |
-| Phase 7f web search | Working through Live Google Search when available, with app `web_search` fallback when quota blocks Live grounding |
-| Phase 7g element highlighting | Working; UI Automation/browser lookup plus click-through capture-excluded overlay |
+| Phase 7e zoom_region + fresh-frame forcing | Corrected in code; real-app verification pending after restart |
+| Phase 7f web search | Corrected in code; Live/app fallback behavior requires real-key verification |
+| Phase 7g element highlighting | Corrected in code through foreground-window UI Automation plus click-through overlay; real-app verification pending |
 | Diagnostics log | Working: `%LOCALAPPDATA%\GeminiLiveShare\logs\session-yyyyMMdd.log` |
 | Browser agent 6a–6e | Working: extension ⇄ proxy ⇄ app pipe, `get_active_page`, `get_form_fields`, page context injected into the conversation. **Read-only** |
 | Google Search in Live | **May be refused by key quota.** The client now falls back to app `web_search`; the UI/status reports which capability is active. See §5 |
@@ -138,10 +138,10 @@ using Live grounding, the app fallback, or is unavailable. Billing/quota changes
 still external to this repository.
 
 ### P3 — Element highlighting
-Resolved in Phase 7g. `highlight_element` finds visible enabled controls through UI
-Automation first, then the existing browser integration when available, and shows a
-temporary click-through marker. Manual DPI, multi-monitor, and browser verification
-are still required.
+Resolved in Phase 7g for Windows desktop controls. `highlight_element` finds visible
+enabled controls through foreground-window UI Automation and shows a temporary
+click-through marker. Browser-agent code is intentionally unchanged. Manual DPI and
+multi-monitor verification remain.
 
 ### P4 — Context across fresh sessions
 Resolved in code by `ConversationStateRebuilder`: when reconnecting into a fresh Live
@@ -150,8 +150,10 @@ shows a Reconnected badge. Manual network-drop verification remains.
 
 ## 6. What's next
 
-**Current phase: Phase 7 — Accuracy and reliability.** Full detail, with "done when"
-criteria for each step, is in `docs/PHASE7_ACCURACY_PLAN.md`.
+**Current phase: Phase 7 — Accuracy and reliability.** The implementation has been
+corrected after a real-session tool-setup failure, but Phase 7 is **not acceptance-complete**
+until the restarted app produces real highlight/search tool calls and the manual checks
+pass. Full detail is in `docs/PHASE7_ACCURACY_PLAN.md`.
 
 | Order | Step | Size |
 |---|---|---|

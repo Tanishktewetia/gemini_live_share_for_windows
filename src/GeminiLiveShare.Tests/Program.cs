@@ -372,6 +372,18 @@ static void ValidateWebSearchSetup()
             "desktop function tools were not serialized without web search");
     }
 
+    ToolConfiguration[] fallbackTools = GeminiLiveClient.BuildTools(webSearchEnabled: false, desktopToolsEnabled: false)!;
+    using (JsonDocument fallbackJson = JsonDocument.Parse(JsonSerializer.Serialize(fallbackTools)))
+    {
+        string raw = fallbackJson.RootElement.GetRawText();
+        Require(!raw.Contains("additionalProperties", StringComparison.Ordinal),
+            "Live function schemas still contain unsupported additionalProperties");
+        Require(fallbackJson.RootElement.EnumerateArray().Any(tool =>
+                tool.TryGetProperty("functionDeclarations", out JsonElement declarations) &&
+                declarations.EnumerateArray().Any(declaration => declaration.GetProperty("name").GetString() == "web_search")),
+            "the no-desktop fallback did not expose the app web_search tool");
+    }
+
     // Measured close reason for a key without Google Search quota in Live sessions.
     Require(GeminiLiveClient.IsQuotaRejection(new InvalidOperationException(
         "Gemini Live API server closed the connection (InternalServerError): You exceeded your current quota, please check your plan")),

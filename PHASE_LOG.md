@@ -1,5 +1,28 @@
 # Phase Log
 
+## Phase 7 corrective fix - Live tools were rejected, so highlight and fallback search never ran
+
+- **Date:** 2026-09-19
+- **Status:** Corrected in code; automated verification passes. Real-app verification is still pending after restart.
+- **Evidence from the user's 2026-09-19 session:**
+  - The exported conversation shows Gemini saying it highlighted Downloads, then admitting that no visible highlight was created. This was a model claim, not a successful tool result.
+  - The session log repeatedly records `Unknown name "additionalProperties" at 'setup.tools[...].function_declarations[...].parameters'` and then falls back to `desktop tools OFF`.
+  - Because the Live function declarations were rejected, `highlight_element`, `zoom_region`, and desktop automation tools were never available to Gemini in that session.
+  - The same fallback left the app with Live search OFF and no callable app-level `web_search` tool, which explains the `Web search unavailable` badge and the fabricated/pseudo search attempts in the transcript.
+- **Fix:**
+  - Removed unsupported `additionalProperties`, `minItems`, and `maxItems` fields from Live function schemas.
+  - Ensured the no-Google fallback always exposes the app-level `web_search` function, even if desktop tools are unavailable.
+  - Added explicit system-instruction rules: call `highlight_element` before claiming a highlight, and call `web_search` before claiming an internet search.
+  - Added schema tests that fail if unsupported fields return or if the no-desktop fallback omits `web_search`.
+  - Added diagnostics logging for received tool names, so a real tool call can be distinguished from model text.
+  - Strengthened the highlight window's native `WM_NCHITTEST` handling so clicks pass through to the underlying application.
+  - Removed the accidental browser-agent element-lookup additions from the previous Phase 7 commit. Browser-agent functionality was not extended in this corrective work.
+- **Verification:**
+  - `dotnet build GeminiLiveShare.sln --no-restore -p:BaseOutputPath=build-check\` — pass, 0 warnings, 0 errors.
+  - `dotnet run --project src/GeminiLiveShare.Tests/GeminiLiveShare.Tests.csproj --no-build -p:BaseOutputPath=build-check\` — pass.
+  - `node --check extension/background/service-worker.js` — pass; the existing browser-agent file is restored to its prior state.
+- **Acceptance condition:** Do not call Phase 7 complete until a restarted app produces a real `highlight_element` tool call and a real `web_search` tool call or a clearly reported provider-level failure.
+
 ## Phase 7e/7f/7g - zoomed vision, fallback web search, and click-through highlighting
 
 - **Date:** 2026-09-19
@@ -16,8 +39,8 @@
     - The fallback calls regular Gemini with Google Search grounding, returns a concise answer plus source titles/URLs, and fails closed when the request cannot be completed.
     - Search capability is surfaced in session status as Google Search, app `web_search`, or OFF; existing quota caching/fallback behavior remains.
   - **7g highlight:**
-    - Added `highlight_element(name, role)` with UI Automation foreground-window lookup first and browser-extension DOM lookup fallback.
-    - Added a transparent, non-activating, click-through WPF overlay with DPI-aware coordinate conversion, multi-monitor screen coordinates, 8-second auto-clear, left-click clear, and `WDA_EXCLUDEFROMCAPTURE`.
+    - Added `highlight_element(name, role)` with foreground-window UI Automation lookup. Browser-agent code was intentionally left out of this corrective scope.
+    - Added a transparent, non-activating, click-through WPF overlay with explicit native hit-test passthrough, DPI-aware coordinate conversion, multi-monitor screen coordinates, 8-second auto-clear, left-click clear, and `WDA_EXCLUDEFROMCAPTURE`.
     - The overlay clears when the captured screen changes, screen sharing stops, or the session ends. It never clicks the target.
     - Added browser `find_element` support returning visible enabled element bounds in physical screen pixels.
 - **Files changed:**
@@ -29,8 +52,6 @@
   - `src/GeminiLiveShare.Core/Desktop/HighlightOverlayService.cs`
   - `src/GeminiLiveShare.Core/Desktop/IHighlightOverlayService.cs`
   - `src/GeminiLiveShare.Core/Desktop/DesktopAutomationService.cs`
-  - `src/GeminiLiveShare.Core/BrowserAgent/BrowserAgentToolRegistry.cs`
-  - `extension/background/service-worker.js`
   - `src/GeminiLiveShare.App/App.xaml.cs`
   - `src/GeminiLiveShare.Tests/Program.cs`
 - **Verification:**
